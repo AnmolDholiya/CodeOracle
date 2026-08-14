@@ -21,13 +21,11 @@ import {
   AlertCircle, 
   Package, 
   ArrowRightLeft,
-  Maximize2,
-  Layers,
-  Sparkles
+  Maximize2
 } from 'lucide-react';
 
 const NODE_WIDTH = 220;
-const NODE_HEIGHT = 80;
+const NODE_HEIGHT = 82;
 
 // Category colors matching Legend
 const CATEGORY_THEMES = {
@@ -36,24 +34,21 @@ const CATEGORY_THEMES = {
     badge: '⚡ Root Entry',
     headerBg: '#FFB800',
     headerColor: '#1E1E2F',
-    border: '#1E1E2F',
-    glowColor: 'rgba(255, 184, 0, 0.4)'
+    border: '#1E1E2F'
   },
   module: {
     label: 'Module',
     badge: '📦 Module',
     headerBg: '#8B5CF6',
     headerColor: '#FFFFFF',
-    border: '#1E1E2F',
-    glowColor: 'rgba(139, 92, 246, 0.4)'
+    border: '#1E1E2F'
   },
   utility: {
     label: 'Utility',
     badge: '🛠️ Utility',
     headerBg: '#00CC66',
     headerColor: '#FFFFFF',
-    border: '#1E1E2F',
-    glowColor: 'rgba(0, 204, 102, 0.4)'
+    border: '#1E1E2F'
   }
 };
 
@@ -68,7 +63,7 @@ const getLanguageIcon = (path = '') => {
   return { label: 'File', icon: '📄' };
 };
 
-// Custom Matrix Node Component with True Classification Colors
+// Custom Matrix Node Component
 const FileNodeComponent = ({ data }) => {
   const category = (data.node_type || data.nodeData?.type || 'module').toLowerCase();
   const theme = CATEGORY_THEMES[category] || CATEGORY_THEMES.module;
@@ -134,7 +129,7 @@ const FileNodeComponent = ({ data }) => {
         style={{ background: headerBg, width: 10, height: 10, border: '2px solid #1E1E2F' }} 
       />
 
-      {/* Header Bar with Category Badge & Filename */}
+      {/* Top Header: Filename & Badge */}
       <div style={{
         background: headerBg,
         color: headerColor,
@@ -150,7 +145,7 @@ const FileNodeComponent = ({ data }) => {
           whiteSpace: 'nowrap', 
           overflow: 'hidden', 
           textOverflow: 'ellipsis', 
-          maxWidth: '135px',
+          maxWidth: '125px',
           fontFamily: 'var(--font-heading)'
         }}>
           {data.label}
@@ -164,7 +159,7 @@ const FileNodeComponent = ({ data }) => {
           color: headerColor,
           fontFamily: 'var(--font-heading)'
         }}>
-          {theme.badge}
+          {data.graphLevel !== undefined ? `L${data.graphLevel} • ` : ''}{theme.badge}
         </span>
       </div>
 
@@ -178,7 +173,7 @@ const FileNodeComponent = ({ data }) => {
         </div>
       </div>
 
-      {/* Bottom Row: Folder & Functions */}
+      {/* Bottom Row: Folder & Function count */}
       <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 0.7fr', background: 'var(--bg-secondary)', fontSize: '9px', fontWeight: 700 }}>
         <div style={{ borderRight: '1.5px solid #1E1E2F', padding: '3px 6px', color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={folderName}>
           📁 {folderName}
@@ -201,31 +196,17 @@ const nodeTypes = {
   fileNode: FileNodeComponent
 };
 
-// Dagre Automatic Layout Algorithm
+// Flow-based DAG Hierarchical Layout with Isolated Node Partitioning
 export const getLayoutedElements = (rawNodes, rawEdges, direction = 'LR') => {
   if (!rawNodes || rawNodes.length === 0) {
     return { nodes: [], edges: [] };
   }
 
-  const dagreGraph = new dagre.graphlib.Graph();
-  dagreGraph.setDefaultEdgeLabel(() => ({}));
-  dagreGraph.setGraph({ 
-    rankdir: direction, 
-    nodesep: 60, 
-    ranksep: 120,
-    marginx: 50,
-    marginy: 50
-  });
-
   const nodeMap = new Map();
-  rawNodes.forEach(n => {
-    nodeMap.set(n.id, n);
-    dagreGraph.setNode(n.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
-  });
+  rawNodes.forEach(n => nodeMap.set(n.id, n));
 
+  // 1. Build sanitized edge list
   const edgesMap = new Map();
-
-  // 1. Process explicit edges from backend
   (rawEdges || []).forEach(e => {
     if (nodeMap.has(e.source) && nodeMap.has(e.target) && e.source !== e.target) {
       const key = `${e.source}->${e.target}`;
@@ -233,7 +214,6 @@ export const getLayoutedElements = (rawNodes, rawEdges, direction = 'LR') => {
     }
   });
 
-  // 2. Complement with node.project_dependencies in case edges list was partial
   rawNodes.forEach(n => {
     if (n.project_dependencies && Array.isArray(n.project_dependencies)) {
       n.project_dependencies.forEach(tgt => {
@@ -249,18 +229,127 @@ export const getLayoutedElements = (rawNodes, rawEdges, direction = 'LR') => {
 
   const validEdges = Array.from(edgesMap.values());
 
+  // 2. Identify connected nodes vs isolated nodes
+  const connectedNodeIds = new Set();
+  validEdges.forEach(e => {
+    connectedNodeIds.add(e.source);
+    connectedNodeIds.add(e.target);
+  });
+
+  const connectedNodes = rawNodes.filter(n => connectedNodeIds.has(n.id));
+  const isolatedNodes = rawNodes.filter(n => !connectedNodeIds.has(n.id));
+
+  // 3. Compute topological depth/levels for connected nodes
+  const nodeLevels = new Map();
+  const inDegreeMap = new Map();
+  const adjList = new Map();
+
+  connectedNodes.forEach(n => {
+    inDegreeMap.set(n.id, 0);
+    adjList.set(n.id, []);
+  });
+
+  validEdges.forEach(e => {
+    if (inDegreeMap.has(e.target)) {
+      inDegreeMap.set(e.target, (inDegreeMap.get(e.target) || 0) + 1);
+    }
+    if (adjList.has(e.source)) {
+      adjList.get(e.source).push(e.target);
+    }
+  });
+
+  // BFS / Longest Path level assignment starting from inDegree == 0 roots
+  const queue = [];
+  connectedNodes.forEach(n => {
+    if ((inDegreeMap.get(n.id) || 0) === 0) {
+      nodeLevels.set(n.id, 0);
+      queue.push(n.id);
+    }
+  });
+
+  while (queue.length > 0) {
+    const currId = queue.shift();
+    const currLevel = nodeLevels.get(currId) || 0;
+    const neighbors = adjList.get(currId) || [];
+
+    neighbors.forEach(nbr => {
+      const existing = nodeLevels.get(nbr) || 0;
+      if (currLevel + 1 > existing) {
+        nodeLevels.set(nbr, currLevel + 1);
+        queue.push(nbr);
+      }
+    });
+  }
+
+  // 4. Run Dagre hierarchical layout on Connected Components
+  const dagreGraph = new dagre.graphlib.Graph();
+  dagreGraph.setDefaultEdgeLabel(() => ({}));
+  dagreGraph.setGraph({ 
+    rankdir: direction, 
+    nodesep: 50, 
+    ranksep: 110,
+    marginx: 50,
+    marginy: 50,
+    ranker: 'network-simplex'
+  });
+
+  connectedNodes.forEach(n => {
+    dagreGraph.setNode(n.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
+  });
+
   validEdges.forEach(e => {
     dagreGraph.setEdge(e.source, e.target);
   });
 
-  // Run Dagre Layout computation
-  dagre.layout(dagreGraph);
+  if (connectedNodes.length > 0) {
+    dagre.layout(dagreGraph);
+  }
 
-  // Map computed coordinates onto React Flow nodes
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+
+  const nodePositions = new Map();
+
+  connectedNodes.forEach(n => {
+    const dagNode = dagreGraph.node(n.id);
+    const x = dagNode ? dagNode.x - NODE_WIDTH / 2 : 0;
+    const y = dagNode ? dagNode.y - NODE_HEIGHT / 2 : 0;
+
+    nodePositions.set(n.id, { x, y });
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x + NODE_WIDTH);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y + NODE_HEIGHT);
+  });
+
+  if (connectedNodes.length === 0) {
+    minX = 0;
+    maxX = 0;
+    minY = 0;
+    maxY = 0;
+  }
+
+  // 5. Neatly cluster Isolated Nodes below the main architecture DAG
+  if (isolatedNodes.length > 0) {
+    const cols = Math.max(2, Math.min(4, Math.ceil(Math.sqrt(isolatedNodes.length))));
+    const startX = connectedNodes.length > 0 ? minX : 40;
+    const startY = connectedNodes.length > 0 ? maxY + 90 : 40;
+
+    isolatedNodes.forEach((n, idx) => {
+      const row = Math.floor(idx / cols);
+      const col = idx % cols;
+      const x = startX + col * (NODE_WIDTH + 40);
+      const y = startY + row * (NODE_HEIGHT + 35);
+      nodePositions.set(n.id, { x, y });
+    });
+  }
+
+  // 6. Generate final React Flow node models
   const layoutedNodes = rawNodes.map(n => {
-    const nodeWithPosition = dagreGraph.node(n.id);
-    const x = nodeWithPosition ? nodeWithPosition.x - NODE_WIDTH / 2 : 0;
-    const y = nodeWithPosition ? nodeWithPosition.y - NODE_HEIGHT / 2 : 0;
+    const pos = nodePositions.get(n.id) || { x: 0, y: 0 };
+    const level = nodeLevels.get(n.id);
 
     return {
       id: n.id,
@@ -273,13 +362,15 @@ export const getLayoutedElements = (rawNodes, rawEdges, direction = 'LR') => {
         functions_count: n.functions_count || 0,
         has_syntax_error: n.has_syntax_error || false,
         node_type: n.type || 'module',
+        graphLevel: level,
         nodeData: n,
         layoutDir: direction
       },
-      position: { x, y }
+      position: pos
     };
   });
 
+  // 7. Generate clean routed edges
   const layoutedEdges = validEdges.map((e, idx) => ({
     id: `edge-${e.source}->${e.target}-${idx}`,
     source: e.source,
