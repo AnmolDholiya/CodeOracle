@@ -80,11 +80,25 @@ function App() {
     <div className="app-container">
       {/* Header / Navbar */}
       <nav className="navbar">
-        <div className="navbar-logo">
-          <div className="logo-icon-ps">
-            <Sparkles size={22} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: '#FF3385',
+            filter: 'drop-shadow(1.5px 1.5px 0px var(--ink))'
+          }}>
+            <Sparkles size={26} />
           </div>
-          <span className="logo-text">CodeOracle</span>
+          <span style={{
+            fontSize: '1.45rem',
+            fontWeight: 800,
+            color: 'var(--ink)',
+            fontFamily: 'var(--font-heading)',
+            letterSpacing: '-0.02em'
+          }}>
+            CodeOracle
+          </span>
         </div>
 
         {/* Global Health Status Chip */}
@@ -96,22 +110,22 @@ function App() {
             style={{
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '0.5rem',
-              background: health ? '#EBFDF2' : (healthLoading ? '#FFFBF0' : '#FFF0F0'),
-              color: health ? 'var(--accent-success)' : (healthLoading ? 'var(--accent-warning)' : 'var(--accent-error)'),
-              border: `2px solid ${health ? 'var(--accent-success)' : (healthLoading ? 'var(--accent-warning)' : 'var(--accent-error)')}`,
-              boxShadow: `2.5px 2.5px 0px ${health ? 'var(--accent-success)' : (healthLoading ? 'var(--accent-warning)' : 'var(--accent-error)')}`,
-              padding: '0.45rem 1rem',
+              gap: '0.55rem',
+              background: '#FF3385',
+              color: '#FFFFFF',
+              border: '2.5px solid var(--ink)',
+              boxShadow: '3.5px 3.5px 0px var(--ink)',
+              padding: '0.5rem 1.35rem',
               borderRadius: 'var(--radius-pill)',
               fontWeight: 800,
-              fontSize: '0.85rem',
+              fontSize: '0.92rem',
               cursor: 'pointer',
               fontFamily: 'var(--font-heading)',
-              transition: 'all 0.15s ease'
+              transition: 'all 0.15s cubic-bezier(0.34, 1.56, 0.64, 1)'
             }}
           >
-            <RefreshCw size={15} className={healthLoading ? 'spin' : ''} />
-            {healthLoading ? (healthStage ? 'Waking…' : 'Checking…') : 'API Health'}
+            <RefreshCw size={16} color="#FFFFFF" className={healthLoading ? 'spin' : ''} />
+            <span>{healthLoading ? (healthStage ? 'Waking…' : 'Checking…') : 'API Health'}</span>
           </button>
         </div>
       </nav>
