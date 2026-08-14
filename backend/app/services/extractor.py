@@ -18,8 +18,9 @@ from app.services.file_classifier import (
     LANGUAGE_MAP
 )
 
-# Base directory for temporary uploads
-BASE_TEMP_DIR = os.path.join(tempfile.gettempdir(), "codeoracle_projects")
+# Base directory for temporary uploads (durable if CODEORACLE_DATA_DIR or persistent volume is mounted)
+DEFAULT_WORKSPACE_DIR = os.path.join(tempfile.gettempdir(), "codeoracle_projects")
+BASE_TEMP_DIR = os.getenv("CODEORACLE_DATA_DIR", DEFAULT_WORKSPACE_DIR).strip() or DEFAULT_WORKSPACE_DIR
 os.makedirs(BASE_TEMP_DIR, exist_ok=True)
 
 logger = logging.getLogger("codeoracle.extractor")

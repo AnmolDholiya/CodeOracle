@@ -78,10 +78,41 @@ export default function ImprovementsCard({ projectId }) {
       setData(res);
     } catch (err) {
       console.error('Failed to load project improvements:', err);
-      if (err.response?.status === 404) {
-        setError('Project workspace expired or server restarted. Please re-upload your ZIP archive to generate fresh recommendations.');
+      const status = err.response?.status;
+      const detail = err.response?.data?.detail;
+      const errCode = (detail && typeof detail === 'object') ? detail.code : '';
+      const errMsg = (detail && typeof detail === 'object') ? detail.message : (typeof detail === 'string' ? detail : err.message);
+
+      if (status === 404 && (errCode === 'PROJECT_NOT_FOUND' || errMsg?.toLowerCase().includes('not found') || errMsg?.toLowerCase().includes('cleaned up'))) {
+        setError({
+          type: 'PROJECT_NOT_FOUND',
+          title: 'Project Workspace No Longer Available',
+          message: 'This project is no longer available on the backend server. Please upload your ZIP archive again to generate fresh recommendations.'
+        });
+      } else if (status === 404) {
+        setError({
+          type: 'ROUTE_NOT_FOUND',
+          title: 'Endpoint Not Found',
+          message: 'The improvements API route was not found on the backend. Please verify your deployment.'
+        });
+      } else if (status === 500) {
+        setError({
+          type: 'ANALYSIS_ERROR',
+          title: 'Server Analysis Error',
+          message: `Analysis error: ${errMsg || 'Unexpected server error while calculating recommendations.'}`
+        });
+      } else if (!err.response) {
+        setError({
+          type: 'NETWORK_ERROR',
+          title: 'Backend Unreachable',
+          message: 'Could not reach the analysis backend. If hosted on a free tier, it may be waking up.'
+        });
       } else {
-        setError(formatApiErrorMessage(err, 'Failed to calculate project improvements'));
+        setError({
+          type: 'UNKNOWN',
+          title: 'Request Failed',
+          message: formatApiErrorMessage(err, 'Failed to calculate project improvements.')
+        });
       }
     } finally {
       setLoading(false);
@@ -179,9 +210,14 @@ export default function ImprovementsCard({ projectId }) {
         )}
 
         {!loading && error && (
-          <div style={{ padding: '1.5rem', background: '#FFF0F0', border: '2.5px solid var(--accent-error)', borderRadius: 'var(--radius-md)', boxShadow: '3px 3px 0px var(--accent-error)', color: 'var(--accent-error)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <AlertTriangle size={24} />
-            <span>{error}</span>
+          <div style={{ padding: '1.5rem', background: '#FFF0F0', border: '2.5px solid var(--accent-error)', borderRadius: 'var(--radius-md)', boxShadow: '3px 3px 0px var(--accent-error)', color: 'var(--accent-error)', display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontWeight: 800, fontSize: '1.05rem', fontFamily: 'var(--font-heading)' }}>
+              <AlertTriangle size={24} />
+              <span>{typeof error === 'object' ? error.title : 'Analysis Notice'}</span>
+            </div>
+            <p style={{ margin: 0, fontSize: '0.92rem', color: 'var(--text-primary)', fontWeight: 500, lineHeight: 1.5 }}>
+              {typeof error === 'object' ? error.message : error}
+            </p>
           </div>
         )}
 
