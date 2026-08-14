@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Bot, Play, CheckCircle2, AlertCircle, Sparkles, RefreshCw } from 'lucide-react';
-import api, { formatApiError } from '../services/api';
+import api, { formatApiErrorMessage } from '../services/api';
 
 export default function AITestCard() {
   const [aiStatus, setAiStatus] = useState(null);
@@ -40,7 +40,7 @@ export default function AITestCard() {
       setTestResult(res.data);
     } catch (err) {
       console.error('AI Test error:', err);
-      setErrorMsg(formatApiError(err, 'AI test request failed'));
+      setErrorMsg(formatApiErrorMessage(err, 'AI test request failed'));
     } finally {
       setRunningTest(false);
     }

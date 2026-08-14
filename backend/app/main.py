@@ -26,13 +26,20 @@ origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
+    "https://code-oracle-gamma.vercel.app",
 ]
 
 if frontend_url:
-    origins.append(frontend_url)
+    # Avoid duplicates but ensure the configured URL is always present
+    if frontend_url not in origins:
+        origins.append(frontend_url)
     if not frontend_url.startswith("http"):
-        origins.append(f"https://{frontend_url}")
-        origins.append(f"http://{frontend_url}")
+        https_url = f"https://{frontend_url}"
+        http_url = f"http://{frontend_url}"
+        if https_url not in origins:
+            origins.append(https_url)
+        if http_url not in origins:
+            origins.append(http_url)
 
 app.add_middleware(
     CORSMiddleware,
@@ -69,6 +76,7 @@ def health_check():
     uptime_seconds = round(time.time() - START_TIME, 2)
     return {
         "status": "healthy",
+        "ready": True,
         "service": "CodeOracle Backend Engine",
         "version": "1.0.0",
         "uptime_seconds": uptime_seconds,

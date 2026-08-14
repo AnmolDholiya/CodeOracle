@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { checkHealth } from './services/api';
+import { checkHealth, wakeUpBackend } from './services/api';
 import ZipUploadCard from './components/ZipUploadCard';
 import ProjectMetadataCard from './components/ProjectMetadataCard';
 import DependencyGraph from './components/DependencyGraph';
@@ -17,13 +17,16 @@ function App() {
   const [health, setHealth] = useState(null);
   const [healthLoading, setHealthLoading] = useState(true);
   const [healthError, setHealthError] = useState(null);
+  const [healthStage, setHealthStage] = useState(''); // waking stage message
   
   // Project Metadata
   const [projectData, setProjectData] = useState(null);
 
+  // On-demand health check (single attempt, for refresh button)
   const fetchHealth = async () => {
     setHealthLoading(true);
     setHealthError(null);
+    setHealthStage('');
     try {
       const data = await checkHealth();
       setHealth(data);
@@ -34,8 +37,28 @@ function App() {
     }
   };
 
+  // Initial mount: use wake-up with retries (handles cold start gracefully)
+  const initialWakeUp = async () => {
+    setHealthLoading(true);
+    setHealthError(null);
+    setHealthStage('Connecting to backend…');
+    try {
+      const data = await wakeUpBackend((stage, attempt, maxAttempts) => {
+        if (stage === 'connecting') setHealthStage('Connecting to backend…');
+        else if (stage === 'waking' || stage === 'retrying') setHealthStage(`Backend is waking up… (${attempt}/${maxAttempts})`);
+        else if (stage === 'ready') setHealthStage('');
+      });
+      setHealth(data);
+    } catch (err) {
+      setHealthError('Backend is temporarily unavailable. Click "API Health" to retry.');
+    } finally {
+      setHealthLoading(false);
+      setHealthStage('');
+    }
+  };
+
   useEffect(() => {
-    fetchHealth();
+    initialWakeUp();
   }, []);
 
   const handleUploadSuccess = (metadata) => {
@@ -55,13 +78,18 @@ function App() {
           <span>CodeOracle</span>
         </div>
         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+          {healthStage && (
+            <span style={{ fontSize: '0.8rem', color: 'var(--accent-secondary)', fontWeight: 600 }}>
+              {healthStage}
+            </span>
+          )}
           <button 
             className="btn-refresh" 
             onClick={fetchHealth}
             disabled={healthLoading}
           >
             <RefreshCw size={15} className={healthLoading ? 'spin' : ''} />
-            {healthLoading ? 'Checking...' : 'API Health'}
+            {healthLoading ? (healthStage ? 'Waking…' : 'Checking…') : 'API Health'}
           </button>
         </div>
       </nav>

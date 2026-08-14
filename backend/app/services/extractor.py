@@ -4,6 +4,7 @@ import zipfile
 import uuid
 import time
 import json
+import logging
 import tempfile
 from typing import Dict, List, Tuple, Optional
 from app.schemas.project import ProjectMetadata, FileDetail, ProjectStatusResponse
@@ -11,6 +12,8 @@ from app.schemas.project import ProjectMetadata, FileDetail, ProjectStatusRespon
 # Base directory for temporary uploads
 BASE_TEMP_DIR = os.path.join(tempfile.gettempdir(), "codeoracle_projects")
 os.makedirs(BASE_TEMP_DIR, exist_ok=True)
+
+logger = logging.getLogger("codeoracle.extractor")
 
 # Language extension mapping
 LANGUAGE_MAP = {
@@ -57,11 +60,13 @@ def update_project_status(
         "stage": stage,
         "progress": progress,
         "message": message,
-        "error": error
+        "error": error,
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")
     }
     try:
         with open(status_file, "w", encoding="utf-8") as f:
             json.dump(status_data, f, indent=2)
+        logger.info(f"[STATUS] project={os.path.basename(project_dir)} stage={stage} progress={progress}% status={status}")
     except Exception:
         pass
 
@@ -98,10 +103,10 @@ def create_project_workspace(file_bytes: bytes, original_filename: str) -> Tuple
     # Initialize status file
     update_project_status(
         project_dir=project_dir,
-        status="processing",
-        stage="extracting",
-        progress=10,
-        message="ZIP archive uploaded. Extracting files safely..."
+        status="queued",
+        stage="queued",
+        progress=5,
+        message="ZIP archive uploaded. Queued for processing..."
     )
 
     return project_id, project_dir
@@ -114,10 +119,10 @@ def create_empty_project_workspace(original_filename: str) -> Tuple[str, str]:
 
     update_project_status(
         project_dir=project_dir,
-        status="processing",
-        stage="downloading_github",
-        progress=10,
-        message=f"Fetching public repository '{original_filename}' from GitHub..."
+        status="queued",
+        stage="queued",
+        progress=5,
+        message=f"Repository '{original_filename}' queued. Waiting to fetch from GitHub..."
     )
     return project_id, project_dir
 
@@ -171,9 +176,10 @@ def process_project_background(project_id: str, original_filename: str):
     try:
         project_dir = get_project_directory(project_id)
         zip_path = os.path.join(project_dir, "uploaded_archive.zip")
+        logger.info(f"[WORKER] Starting background processing: project_id={project_id}, filename={original_filename}")
 
         # Stage 1: Extraction
-        update_project_status(project_dir, "processing", "extracting", 25, "Extracting ZIP archive safely...")
+        update_project_status(project_dir, "processing", "extracting", 15, "Extracting ZIP archive safely...")
         if os.path.exists(zip_path):
             try:
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -189,8 +195,9 @@ def process_project_background(project_id: str, original_filename: str):
                     os.remove(zip_path)
 
         # Stage 2: File Scanning
-        update_project_status(project_dir, "processing", "discovering_files", 50, "Discovering codebase files & calculating line counts...")
+        update_project_status(project_dir, "processing", "discovering_files", 35, "Discovering codebase files & calculating line counts...")
         files_metadata, languages, total_loc = scan_project_directory(project_dir)
+        logger.info(f"[WORKER] project_id={project_id} discovered {len(files_metadata)} files, {total_loc} LOC, languages={languages}")
 
         metadata = ProjectMetadata(
             project_id=project_id,
@@ -209,14 +216,21 @@ def process_project_background(project_id: str, original_filename: str):
             f.write(metadata.model_dump_json(indent=2))
 
         # Stage 3: Python AST Analysis
-        update_project_status(project_dir, "processing", "analyzing_python", 75, "Scanning Python AST symbols and imports...")
+        update_project_status(project_dir, "processing", "analyzing_python", 55, "Scanning Python AST symbols and imports...")
         from app.services.python_ast import analyze_project_workspace
         ast_analysis = analyze_project_workspace(project_dir, project_id)
         ast_cache_path = os.path.join(project_dir, "analysis_ast.json")
         with open(ast_cache_path, "w", encoding="utf-8") as f:
             f.write(ast_analysis.model_dump_json(indent=2))
 
-        # Stage 4: Dependency Graph
+        # Stage 4: JavaScript/TypeScript indexing (lightweight — files are analyzed on-demand)
+        update_project_status(project_dir, "processing", "analyzing_javascript", 75, "Indexing JavaScript/TypeScript source files...")
+        # JS/TS AST analysis is performed on-demand per-file via the explanation/testing endpoints.
+        # This stage confirms JS/TS files are discovered and indexed in metadata.
+        js_ts_count = sum(1 for f in files_metadata if f.extension in ('.js', '.jsx', '.ts', '.tsx'))
+        logger.info(f"[WORKER] project_id={project_id} JS/TS files indexed: {js_ts_count}")
+
+        # Stage 5: Dependency Graph
         update_project_status(project_dir, "processing", "building_dependencies", 90, "Building import dependency graph...")
         from app.services.dependency_graph import generate_dependency_graph
         graph = generate_dependency_graph(ast_analysis)
@@ -224,10 +238,12 @@ def process_project_background(project_id: str, original_filename: str):
         with open(dep_cache_path, "w", encoding="utf-8") as f:
             f.write(graph.model_dump_json(indent=2))
 
-        # Stage 5: Completed
+        # Stage 6: Completed
         update_project_status(project_dir, "completed", "completed", 100, "Project processing completed successfully!")
+        logger.info(f"[WORKER] Completed: project_id={project_id}")
 
     except Exception as exc:
+        logger.error(f"[WORKER] Failed: project_id={project_id}, error={exc}")
         project_dir = os.path.join(BASE_TEMP_DIR, project_id)
         update_project_status(
             project_dir=project_dir,

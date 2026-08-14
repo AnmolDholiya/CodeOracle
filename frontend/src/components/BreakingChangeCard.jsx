@@ -16,7 +16,7 @@ import {
   Code2,
   FileText
 } from 'lucide-react';
-import api, { formatApiError } from '../services/api';
+import api, { formatApiErrorMessage } from '../services/api';
 
 export default function BreakingChangeCard({ projectId, projectFiles = [] }) {
   const breakableFiles = projectFiles.filter(f => f.relative_path.toLowerCase().match(/\.(py|js|jsx|ts|tsx)$/));
@@ -54,7 +54,7 @@ export default function BreakingChangeCard({ projectId, projectFiles = [] }) {
       setAnalysisData(res.data);
     } catch (err) {
       console.error('Breaking change analysis error:', err);
-      setErrorMsg(formatApiError(err, 'Breaking change analysis failed.'));
+      setErrorMsg(formatApiErrorMessage(err, 'Breaking change analysis failed.'));
     } finally {
       setAnalyzing(false);
     }
@@ -75,7 +75,7 @@ export default function BreakingChangeCard({ projectId, projectFiles = [] }) {
       setExplanationData(res.data);
     } catch (err) {
       console.error('Breaking change explanation error:', err);
-      setExpErrorMsg(formatApiError(err, 'AI breaking change explanation failed.'));
+      setExpErrorMsg(formatApiErrorMessage(err, 'AI breaking change explanation failed.'));
     } finally {
       setExplaining(false);
     }

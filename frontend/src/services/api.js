@@ -3,25 +3,98 @@ import { API_BASE_URL } from '../config';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 120000, // 120 seconds to easily handle Render free tier cold-starts
+  timeout: 60000, // 60 seconds for normal API calls (backend is already awake)
 });
 
+// ─── Error Classification ───────────────────────────────────────────
+
+/**
+ * Classifies and formats API errors into structured { type, message } objects.
+ * Types: COLD_START, TIMEOUT, BACKEND_UNAVAILABLE, UPLOAD_ERROR,
+ *        VALIDATION_ERROR, CORS_ERROR, RATE_LIMIT, PROCESSING_ERROR, UNKNOWN
+ */
 export const formatApiError = (err, fallbackMsg = 'An error occurred.') => {
-  if (!err) return fallbackMsg;
-  if (err.code === 'ECONNABORTED' || (err.message && err.message.toLowerCase().includes('timeout'))) {
-    return 'Server connection timed out (Render cold-start in progress). Please wait a few seconds and try again.';
+  if (!err) return { type: 'UNKNOWN', message: fallbackMsg };
+
+  // Network-level failures (no response received)
+  if (!err.response) {
+    if (err.code === 'ECONNABORTED' || (err.message && err.message.toLowerCase().includes('timeout'))) {
+      return { type: 'TIMEOUT', message: 'Request timed out. The server may still be processing.' };
+    }
+    if (err.code === 'ERR_NETWORK' || err.message === 'Network Error') {
+      return { type: 'BACKEND_UNAVAILABLE', message: 'Cannot reach the CodeOracle backend. It may be starting up.' };
+    }
+    return { type: 'BACKEND_UNAVAILABLE', message: err.message || fallbackMsg };
   }
+
+  // HTTP response received — classify by status code
+  const status = err.response.status;
   const detail = err.response?.data?.detail;
-  if (!detail) return err.message || fallbackMsg;
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail)) {
-    return detail.map(item => (typeof item === 'object' ? (item.msg || JSON.stringify(item)) : String(item))).join('; ');
-  }
-  if (typeof detail === 'object') {
-    return detail.msg || detail.message || JSON.stringify(detail);
-  }
-  return String(detail);
+  const msg = typeof detail === 'string' ? detail
+    : Array.isArray(detail) ? detail.map(item => (typeof item === 'object' ? (item.msg || JSON.stringify(item)) : String(item))).join('; ')
+    : (detail && typeof detail === 'object') ? (detail.msg || detail.message || JSON.stringify(detail))
+    : (err.message || fallbackMsg);
+
+  if (status === 400) return { type: 'VALIDATION_ERROR', message: msg };
+  if (status === 401 || status === 403) return { type: 'CORS_ERROR', message: msg };
+  if (status === 404) return { type: 'PROCESSING_ERROR', message: msg };
+  if (status === 429) return { type: 'RATE_LIMIT', message: msg };
+  if (status === 502 || status === 503 || status === 504) return { type: 'COLD_START', message: msg };
+  if (status >= 500) return { type: 'PROCESSING_ERROR', message: msg };
+
+  return { type: 'UNKNOWN', message: msg };
 };
+
+/**
+ * Legacy-compatible string error formatter (for components that haven't migrated).
+ */
+export const formatApiErrorMessage = (err, fallbackMsg = 'An error occurred.') => {
+  return formatApiError(err, fallbackMsg).message;
+};
+
+// ─── Backend Wake-Up (Cold-Start Handling) ──────────────────────────
+
+/**
+ * Pings GET /api/health with exponential backoff to wake the Render Free backend.
+ * Returns the health data on success, throws on total failure.
+ *
+ * @param {function} onProgress - Optional callback: (stage: string, attempt: number, maxAttempts: number) => void
+ */
+export const wakeUpBackend = async (onProgress) => {
+  const MAX_ATTEMPTS = 5;
+  const DELAYS = [2000, 4000, 8000, 10000, 10000]; // ms between retries
+  const HEALTH_TIMEOUT = 8000; // 8s per health ping (short, for cold-start detection)
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      if (onProgress) {
+        if (attempt === 1) onProgress('connecting', attempt, MAX_ATTEMPTS);
+        else onProgress('retrying', attempt, MAX_ATTEMPTS);
+      }
+
+      const response = await axios.get(`${API_BASE_URL}/api/health`, {
+        timeout: HEALTH_TIMEOUT,
+      });
+
+      if (response.data && (response.data.status === 'healthy' || response.data.status === 'ok')) {
+        if (onProgress) onProgress('ready', attempt, MAX_ATTEMPTS);
+        return response.data;
+      }
+    } catch (err) {
+      console.warn(`[WakeUp] Health check attempt ${attempt}/${MAX_ATTEMPTS} failed:`, err.message);
+
+      if (attempt < MAX_ATTEMPTS) {
+        if (onProgress) onProgress('waking', attempt, MAX_ATTEMPTS);
+        await new Promise(resolve => setTimeout(resolve, DELAYS[attempt - 1]));
+      }
+    }
+  }
+
+  // All attempts exhausted
+  throw new Error('BACKEND_WAKE_FAILED');
+};
+
+// ─── Health Check ───────────────────────────────────────────────────
 
 export const checkHealth = async () => {
   try {
@@ -33,6 +106,8 @@ export const checkHealth = async () => {
   }
 };
 
+// ─── Project Upload ─────────────────────────────────────────────────
+
 export const uploadProjectZip = async (file, onUploadProgress) => {
   const formData = new FormData();
   formData.append('file', file);
@@ -41,6 +116,7 @@ export const uploadProjectZip = async (file, onUploadProgress) => {
     headers: {
       'Content-Type': 'multipart/form-data',
     },
+    timeout: 60000, // 60s for actual file transfer (backend is already awake)
     onUploadProgress: (progressEvent) => {
       if (onUploadProgress && progressEvent.total) {
         const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
@@ -58,6 +134,8 @@ export const uploadGithubRepo = async (repoUrl) => {
   });
   return response.data;
 };
+
+// ─── Project Operations ─────────────────────────────────────────────
 
 export const deleteProject = async (projectId) => {
   const response = await api.delete(`/api/projects/${projectId}`);
@@ -88,6 +166,8 @@ export const getProjectDependencies = async (projectId) => {
   const response = await api.get(`/api/projects/${projectId}/dependencies`);
   return response.data;
 };
+
+// ─── AI-Powered Features ────────────────────────────────────────────
 
 export const refactorFile = async (projectId, filePath, forceRefresh = false) => {
   const response = await api.post(`/api/projects/${projectId}/refactor/file`, {

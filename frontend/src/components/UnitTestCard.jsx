@@ -18,7 +18,7 @@ import {
   Info,
   Sparkles
 } from 'lucide-react';
-import api, { formatApiError } from '../services/api';
+import api, { formatApiErrorMessage } from '../services/api';
 
 export default function UnitTestCard({ projectId, projectFiles = [] }) {
   const testableFiles = projectFiles.filter(f => f.relative_path.toLowerCase().match(/\.(py|js|jsx|ts|tsx)$/));
@@ -57,7 +57,7 @@ export default function UnitTestCard({ projectId, projectFiles = [] }) {
       setTestGenData(res.data);
     } catch (err) {
       console.error('Test generation error:', err);
-      setGenError(formatApiError(err, 'Test generation failed.'));
+      setGenError(formatApiErrorMessage(err, 'Test generation failed.'));
     } finally {
       setGenerating(false);
     }
@@ -86,7 +86,7 @@ export default function UnitTestCard({ projectId, projectFiles = [] }) {
       }
     } catch (err) {
       console.error('Test execution error:', err);
-      setRunError(formatApiError(err, 'Test execution failed.'));
+      setRunError(formatApiErrorMessage(err, 'Test execution failed.'));
     } finally {
       setRunning(false);
     }

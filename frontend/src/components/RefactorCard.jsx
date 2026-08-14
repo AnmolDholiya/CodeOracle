@@ -18,7 +18,7 @@ import {
   Activity,
   ArrowRight
 } from 'lucide-react';
-import api, { formatApiError } from '../services/api';
+import api, { formatApiErrorMessage } from '../services/api';
 
 export default function RefactorCard({ projectId, projectFiles = [] }) {
   const refactorableFiles = projectFiles.filter(f => f.relative_path.toLowerCase().match(/\.(py|js|jsx|ts|tsx)$/));
@@ -65,7 +65,7 @@ export default function RefactorCard({ projectId, projectFiles = [] }) {
       setActiveCodeTab('refactored');
     } catch (err) {
       console.error('Refactoring error:', err);
-      setErrorMsg(formatApiError(err, 'AI Code Refactoring failed.'));
+      setErrorMsg(formatApiErrorMessage(err, 'AI Code Refactoring failed.'));
     } finally {
       setLoading(false);
     }
@@ -86,7 +86,7 @@ export default function RefactorCard({ projectId, projectFiles = [] }) {
       setSaveSuccessMsg(res.data.message || 'Refactored code saved successfully!');
     } catch (err) {
       console.error('Save refactored code error:', err);
-      setErrorMsg(formatApiError(err, 'Failed to save refactored code.'));
+      setErrorMsg(formatApiErrorMessage(err, 'Failed to save refactored code.'));
     } finally {
       setSaving(false);
     }

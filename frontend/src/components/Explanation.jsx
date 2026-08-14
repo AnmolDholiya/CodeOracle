@@ -21,7 +21,7 @@ import {
   Folder,
   FolderTree
 } from 'lucide-react';
-import api, { formatApiError } from '../services/api';
+import api, { formatApiErrorMessage } from '../services/api';
 
 export default function Explanation({ projectId, projectFiles = [] }) {
   const [activeTab, setActiveTab] = useState('project'); // 'project' | 'file'
@@ -70,7 +70,7 @@ export default function Explanation({ projectId, projectFiles = [] }) {
       setProjectExp(res.data);
     } catch (err) {
       console.error('Project explanation error:', err);
-      setErrorProject(formatApiError(err, 'Failed to fetch project explanation'));
+      setErrorProject(formatApiErrorMessage(err, 'Failed to fetch project explanation'));
     } finally {
       setLoadingProject(false);
     }
@@ -90,7 +90,7 @@ export default function Explanation({ projectId, projectFiles = [] }) {
       setModuleExp(res.data);
     } catch (err) {
       console.error('Module explanation error:', err);
-      setErrorModule(formatApiError(err, 'Failed to fetch file explanation'));
+      setErrorModule(formatApiErrorMessage(err, 'Failed to fetch file explanation'));
     } finally {
       setLoadingModule(false);
     }

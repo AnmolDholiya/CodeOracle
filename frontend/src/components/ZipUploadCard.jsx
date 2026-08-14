@@ -1,6 +1,18 @@
 import React, { useState, useRef } from 'react';
-import { UploadCloud, FileArchive, CheckCircle2, AlertCircle, Loader2, Cpu, Github, ArrowRight } from 'lucide-react';
-import { uploadProjectZip, uploadGithubRepo, getProjectStatus, getProjectInfo, formatApiError } from '../services/api';
+import { UploadCloud, FileArchive, CheckCircle2, AlertCircle, Loader2, Cpu, Github, ArrowRight, Server, Wifi } from 'lucide-react';
+import { uploadProjectZip, uploadGithubRepo, getProjectStatus, getProjectInfo, formatApiError, wakeUpBackend } from '../services/api';
+
+// Stage labels for UX progress display
+const STAGE_LABELS = {
+  queued: 'Queued for processing…',
+  extracting: 'Extracting ZIP archive…',
+  discovering_files: 'Discovering files & calculating line counts…',
+  analyzing_python: 'Analyzing Python AST symbols & imports…',
+  analyzing_javascript: 'Indexing JavaScript/TypeScript source files…',
+  building_dependencies: 'Building import dependency graph…',
+  completed: 'Analysis complete!',
+  failed: 'Processing failed.',
+};
 
 export default function ZipUploadCard({ onUploadSuccess }) {
   const [activeTab, setActiveTab] = useState('zip'); // 'zip' | 'github'
@@ -8,14 +20,51 @@ export default function ZipUploadCard({ onUploadSuccess }) {
   const [isDragging, setIsDragging] = useState(false);
   const [file, setFile] = useState(null);
   const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState('idle'); // idle | uploading | processing | success | error
+  const [status, setStatus] = useState('idle'); // idle | waking | uploading | processing | success | error
   const [stageMessage, setStageMessage] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const fileInputRef = useRef(null);
 
+  // ─── Cold-Start Wake-Up ───────────────────────────────────────────
+
+  const wakeAndProceed = async (proceedFn) => {
+    setStatus('waking');
+    setProgress(0);
+    setErrorMsg('');
+    setStageMessage('Starting backend server…');
+
+    try {
+      await wakeUpBackend((stage, attempt, maxAttempts) => {
+        if (stage === 'connecting') {
+          setStageMessage('Connecting to CodeOracle backend…');
+          setProgress(5);
+        } else if (stage === 'waking' || stage === 'retrying') {
+          setStageMessage(`Backend is waking up… (attempt ${attempt}/${maxAttempts})`);
+          setProgress(Math.min(10 + attempt * 8, 40));
+        } else if (stage === 'ready') {
+          setStageMessage('Backend ready.');
+          setProgress(45);
+        }
+      });
+
+      // Backend is alive — proceed with the actual upload
+      await proceedFn();
+    } catch (err) {
+      if (err.message === 'BACKEND_WAKE_FAILED') {
+        setErrorMsg('CodeOracle backend is temporarily unavailable. Please try again in a moment.');
+      } else {
+        const { message } = formatApiError(err, 'Failed to connect to backend.');
+        setErrorMsg(message);
+      }
+      setStatus('error');
+    }
+  };
+
+  // ─── File Selection ───────────────────────────────────────────────
+
   const handleFileChange = (selectedFile) => {
     if (!selectedFile) return;
-    
+
     if (!selectedFile.name.toLowerCase().endsWith('.zip')) {
       setErrorMsg('Please select a valid .zip codebase archive.');
       setStatus('error');
@@ -24,17 +73,32 @@ export default function ZipUploadCard({ onUploadSuccess }) {
 
     setFile(selectedFile);
     setErrorMsg('');
-    startUpload(selectedFile);
+
+    // Wake backend first, then upload
+    wakeAndProceed(() => startUpload(selectedFile));
   };
+
+  // ─── Status Polling (progressive backoff: 1s → 2s → 3s → 5s) ─────
 
   const pollProcessingStatus = async (projectId) => {
     setStatus('processing');
+    let pollCount = 0;
+
+    const getDelay = (count) => {
+      if (count === 0) return 1000;
+      if (count === 1) return 2000;
+      if (count === 2) return 3000;
+      return 5000; // all subsequent polls
+    };
+
+    const MAX_POLLS = 120; // safety cap: ~10 minutes max
 
     const checkStatus = async () => {
       try {
         const statusData = await getProjectStatus(projectId);
+        const stageLabel = STAGE_LABELS[statusData.stage] || statusData.message || 'Processing codebase…';
         setProgress(statusData.progress || 20);
-        setStageMessage(statusData.message || 'Processing codebase...');
+        setStageMessage(stageLabel);
 
         if (statusData.status === 'completed') {
           // Fetch final processed metadata
@@ -46,13 +110,17 @@ export default function ZipUploadCard({ onUploadSuccess }) {
         } else if (statusData.status === 'failed') {
           setErrorMsg(statusData.error || statusData.message || 'Processing failed.');
           setStatus('error');
+        } else if (pollCount >= MAX_POLLS) {
+          setErrorMsg('Processing is taking longer than expected. Please check back later.');
+          setStatus('error');
         } else {
-          // Continue polling after 800ms
-          setTimeout(checkStatus, 800);
+          pollCount++;
+          setTimeout(checkStatus, getDelay(pollCount));
         }
       } catch (err) {
         console.error('Status check error:', err);
-        setErrorMsg(formatApiError(err, 'Failed to check project processing status.'));
+        const { message } = formatApiError(err, 'Failed to check project processing status.');
+        setErrorMsg(message);
         setStatus('error');
       }
     };
@@ -60,27 +128,34 @@ export default function ZipUploadCard({ onUploadSuccess }) {
     checkStatus();
   };
 
+  // ─── ZIP Upload ───────────────────────────────────────────────────
+
   const startUpload = async (fileToUpload) => {
     setStatus('uploading');
     setProgress(0);
-    setStageMessage('Uploading zip archive...');
+    setStageMessage('Uploading zip archive…');
 
     try {
       const data = await uploadProjectZip(fileToUpload, (percent) => {
         setProgress(Math.min(percent, 90));
+        setStageMessage('Uploading zip archive…');
       });
 
       if (data.project_id) {
+        setStageMessage('Upload successful. Analysis started.');
         pollProcessingStatus(data.project_id);
       } else {
         throw new Error('Upload response missing project ID');
       }
     } catch (err) {
       console.error('Upload Error:', err);
-      setErrorMsg(formatApiError(err, 'Failed to upload zip file.'));
+      const { message } = formatApiError(err, 'Failed to upload zip file.');
+      setErrorMsg(message);
       setStatus('error');
     }
   };
+
+  // ─── GitHub Upload ────────────────────────────────────────────────
 
   const handleGithubSubmit = async (e) => {
     e.preventDefault();
@@ -89,26 +164,33 @@ export default function ZipUploadCard({ onUploadSuccess }) {
       setStatus('error');
       return;
     }
-    if (status === 'uploading' || status === 'processing') return;
+    if (status === 'waking' || status === 'uploading' || status === 'processing') return;
 
-    setStatus('uploading');
-    setProgress(15);
-    setErrorMsg('');
-    setStageMessage('Fetching repository ZIP archive from GitHub...');
+    // Wake backend first, then submit GitHub URL
+    wakeAndProceed(async () => {
+      setStatus('uploading');
+      setProgress(15);
+      setErrorMsg('');
+      setStageMessage('Fetching repository ZIP archive from GitHub…');
 
-    try {
-      const data = await uploadGithubRepo(githubUrl.trim());
-      if (data.project_id) {
-        pollProcessingStatus(data.project_id);
-      } else {
-        throw new Error('GitHub upload response missing project ID');
+      try {
+        const data = await uploadGithubRepo(githubUrl.trim());
+        if (data.project_id) {
+          setStageMessage('Repository queued. Analysis started.');
+          pollProcessingStatus(data.project_id);
+        } else {
+          throw new Error('GitHub upload response missing project ID');
+        }
+      } catch (err) {
+        console.error('GitHub Upload Error:', err);
+        const { message } = formatApiError(err, 'GitHub repository URL could not be processed. Please check the repository URL.');
+        setErrorMsg(message);
+        setStatus('error');
       }
-    } catch (err) {
-      console.error('GitHub Upload Error:', err);
-      setErrorMsg(formatApiError(err, 'GitHub repository URL could not be processed. Please check the repository URL.'));
-      setStatus('error');
-    }
+    });
   };
+
+  // ─── Drag & Drop ──────────────────────────────────────────────────
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -125,6 +207,38 @@ export default function ZipUploadCard({ onUploadSuccess }) {
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       handleFileChange(e.dataTransfer.files[0]);
     }
+  };
+
+  // ─── Reset / Retry ────────────────────────────────────────────────
+
+  const handleReset = () => {
+    setStatus('idle');
+    setProgress(0);
+    setStageMessage('');
+    setErrorMsg('');
+    // Preserve `file` state so user doesn't have to re-select
+  };
+
+  const handleRetryWithFile = () => {
+    if (file) {
+      setErrorMsg('');
+      wakeAndProceed(() => startUpload(file));
+    } else {
+      handleReset();
+    }
+  };
+
+  // ─── Determine if interaction is blocked ──────────────────────────
+
+  const isBlocked = status === 'waking' || status === 'uploading' || status === 'processing';
+
+  // ─── Wake-Up Stage Icon ───────────────────────────────────────────
+
+  const getStatusIcon = () => {
+    if (status === 'waking') return <Server size={16} className="spin" style={{ color: 'var(--accent-secondary)' }} />;
+    if (status === 'uploading') return <Loader2 size={16} className="spin" />;
+    if (status === 'processing') return <Cpu size={16} style={{ color: 'var(--accent-secondary)' }} />;
+    return null;
   };
 
   return (
@@ -188,14 +302,14 @@ export default function ZipUploadCard({ onUploadSuccess }) {
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          onClick={() => status === 'idle' || status === 'error' ? fileInputRef.current?.click() : null}
+          onClick={() => !isBlocked && (status === 'idle' || status === 'error') ? fileInputRef.current?.click() : null}
           style={{
             border: `2px dashed ${isDragging ? 'var(--accent-primary)' : 'var(--border-color)'}`,
             borderRadius: 'var(--radius-lg)',
             padding: '3rem 2rem',
             textAlign: 'center',
             background: isDragging ? 'rgba(244, 63, 94, 0.04)' : 'var(--bg-primary)',
-            cursor: status === 'processing' || status === 'uploading' ? 'default' : 'pointer',
+            cursor: isBlocked ? 'default' : 'pointer',
             transition: 'all 0.2s ease',
           }}
         >
@@ -205,17 +319,37 @@ export default function ZipUploadCard({ onUploadSuccess }) {
             accept=".zip"
             style={{ display: 'none' }}
             onChange={(e) => handleFileChange(e.target.files[0])}
-            disabled={status === 'uploading' || status === 'processing'}
+            disabled={isBlocked}
           />
 
-          <UploadCloud size={48} style={{ color: isDragging ? 'var(--accent-primary)' : 'var(--accent-primary)', marginBottom: '0.85rem', opacity: 0.85 }} />
-          
-          <p style={{ fontWeight: 700, fontSize: '1.1rem', color: 'var(--text-primary)', marginBottom: '0.35rem' }}>
-            Drop a ZIP archive here or <span style={{ color: 'var(--accent-primary)', textDecoration: 'underline' }}>browse</span>
-          </p>
-          <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-            Supports Python (.py), JavaScript (.js, .jsx) and TypeScript (.ts, .tsx) codebases up to 350,000 LOC
-          </p>
+          <UploadCloud size={48} style={{ color: 'var(--accent-primary)', marginBottom: '0.85rem', opacity: 0.85 }} />
+
+          {file && (status === 'error' || status === 'idle') ? (
+            <>
+              <p style={{ fontWeight: 700, fontSize: '1.1rem', color: 'var(--text-primary)', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center' }}>
+                <FileArchive size={18} style={{ color: 'var(--accent-secondary)' }} />
+                {file.name}
+              </p>
+              <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                {(file.size / 1024).toFixed(1)} KB — Click to select a different file, or{' '}
+                <span
+                  onClick={(e) => { e.stopPropagation(); handleRetryWithFile(); }}
+                  style={{ color: 'var(--accent-primary)', textDecoration: 'underline', cursor: 'pointer', fontWeight: 600 }}
+                >
+                  retry upload
+                </span>
+              </p>
+            </>
+          ) : (
+            <>
+              <p style={{ fontWeight: 700, fontSize: '1.1rem', color: 'var(--text-primary)', marginBottom: '0.35rem' }}>
+                Drop a ZIP archive here or <span style={{ color: 'var(--accent-primary)', textDecoration: 'underline' }}>browse</span>
+              </p>
+              <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                Supports Python (.py), JavaScript (.js, .jsx) and TypeScript (.ts, .tsx) codebases up to 350,000 LOC
+              </p>
+            </>
+          )}
         </div>
       ) : (
         /* GitHub Repository Input Tab Content */
@@ -230,7 +364,7 @@ export default function ZipUploadCard({ onUploadSuccess }) {
                 placeholder="https://github.com/owner/repository"
                 value={githubUrl}
                 onChange={(e) => setGithubUrl(e.target.value)}
-                disabled={status === 'uploading' || status === 'processing'}
+                disabled={isBlocked}
                 style={{
                   flex: 1,
                   padding: '0.75rem 1rem',
@@ -245,17 +379,17 @@ export default function ZipUploadCard({ onUploadSuccess }) {
               />
               <button
                 type="submit"
-                disabled={!githubUrl.trim() || status === 'uploading' || status === 'processing'}
+                disabled={!githubUrl.trim() || isBlocked}
                 className="btn-refresh"
                 style={{
                   padding: '0.75rem 1.5rem',
                   fontSize: '0.875rem',
-                  opacity: !githubUrl.trim() || status === 'uploading' || status === 'processing' ? 0.6 : 1
+                  opacity: !githubUrl.trim() || isBlocked ? 0.6 : 1
                 }}
               >
-                {status === 'uploading' || status === 'processing' ? (
+                {isBlocked ? (
                   <>
-                    <Loader2 size={16} className="spin" /> Fetching...
+                    <Loader2 size={16} className="spin" /> {status === 'waking' ? 'Connecting…' : 'Fetching…'}
                   </>
                 ) : (
                   <>
@@ -272,18 +406,25 @@ export default function ZipUploadCard({ onUploadSuccess }) {
         </form>
       )}
 
-      {/* Upload & Async Processing Progress State */}
-      {(status === 'uploading' || status === 'processing') && (
+      {/* Wake-Up / Upload / Processing Progress */}
+      {(status === 'waking' || status === 'uploading' || status === 'processing') && (
         <div style={{ marginTop: '1.25rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem', marginBottom: '0.5rem' }}>
             <span style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 600 }}>
-              {status === 'uploading' ? <Loader2 size={16} className="spin" /> : <Cpu size={16} style={{ color: 'var(--accent-secondary)' }} />}
-              {stageMessage || `Processing ${file?.name || 'repository'}...`}
+              {getStatusIcon()}
+              {stageMessage || `Processing ${file?.name || 'repository'}…`}
             </span>
             <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--accent-primary)' }}>{progress}%</span>
           </div>
           <div style={{ width: '100%', height: '8px', background: 'rgba(255, 255, 255, 0.1)', borderRadius: '4px', overflow: 'hidden' }}>
-            <div style={{ width: `${progress}%`, height: '100%', background: 'linear-gradient(90deg, var(--accent-primary), var(--accent-secondary))', transition: 'width 0.3s ease' }} />
+            <div style={{
+              width: `${progress}%`,
+              height: '100%',
+              background: status === 'waking'
+                ? 'linear-gradient(90deg, var(--accent-secondary), var(--accent-warning))'
+                : 'linear-gradient(90deg, var(--accent-primary), var(--accent-secondary))',
+              transition: 'width 0.3s ease'
+            }} />
           </div>
         </div>
       )}
@@ -292,7 +433,26 @@ export default function ZipUploadCard({ onUploadSuccess }) {
       {status === 'error' && (
         <div style={{ marginTop: '1.25rem', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', padding: '0.85rem 1rem', borderRadius: 'var(--radius-md)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <AlertCircle size={18} style={{ color: 'var(--accent-error)', flexShrink: 0 }} />
-          <span style={{ fontSize: '0.875rem', color: 'var(--accent-error)' }}>{errorMsg}</span>
+          <span style={{ fontSize: '0.875rem', color: 'var(--accent-error)', flex: 1 }}>{errorMsg}</span>
+          {file && (
+            <button
+              onClick={handleRetryWithFile}
+              style={{
+                background: 'none',
+                border: '1px solid var(--accent-error)',
+                color: 'var(--accent-error)',
+                padding: '0.35rem 0.85rem',
+                borderRadius: '9999px',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                flexShrink: 0,
+                transition: 'all 0.2s ease'
+              }}
+            >
+              Retry
+            </button>
+          )}
         </div>
       )}
 

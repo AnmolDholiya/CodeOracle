@@ -12,7 +12,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from '@dagrejs/dagre';
-import { getProjectDependencies, formatApiError } from '../services/api';
+import { getProjectDependencies, formatApiErrorMessage } from '../services/api';
 import { 
   GitFork, 
   RefreshCw, 
@@ -211,7 +211,7 @@ export default function DependencyGraph({ projectId }) {
       buildFlowElements(data.nodes || [], data.edges || [], layoutDirection);
     } catch (err) {
       console.error('Failed to load dependency graph:', err);
-      setError(formatApiError(err, 'Unable to load dependency graph. Please try again.'));
+      setError(formatApiErrorMessage(err, 'Unable to load dependency graph. Please try again.'));
     } finally {
       setLoading(false);
     }

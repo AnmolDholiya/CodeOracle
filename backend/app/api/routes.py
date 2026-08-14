@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import logging
 import urllib.request
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Body, status
 from app.schemas.project import ProjectMetadata, CleanupResponse, ProjectStatusResponse, UploadResponse, GitHubRepoRequest
@@ -20,8 +21,9 @@ from app.services.python_ast import analyze_project_workspace
 from app.services.dependency_graph import generate_dependency_graph
 
 router = APIRouter(prefix="/api/projects", tags=["Projects"])
+logger = logging.getLogger("codeoracle.routes")
 
-@router.post("/upload", response_model=UploadResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/upload", response_model=UploadResponse, status_code=status.HTTP_202_ACCEPTED)
 async def upload_project_zip(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
@@ -34,34 +36,39 @@ async def upload_project_zip(
         )
     
     contents = await file.read()
-    if len(contents) == 0:
+    file_size = len(contents)
+    if file_size == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Uploaded file is empty."
         )
         
     try:
+        logger.info(f"[UPLOAD] Received ZIP: filename={file.filename}, size={file_size} bytes")
         project_id, project_dir = create_project_workspace(contents, file.filename)
         # Launch non-blocking background processing task
         background_tasks.add_task(process_project_background, project_id, file.filename)
+        logger.info(f"[UPLOAD] Acknowledged: project_id={project_id}, background processing started")
         
         return UploadResponse(
             project_id=project_id,
-            status="processing",
-            message="ZIP upload received successfully. Background processing started."
+            status="queued",
+            message="Project uploaded successfully and processing has started."
         )
     except ValueError as val_err:
+        logger.warning(f"[UPLOAD] Validation error: {val_err}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(val_err)
         )
     except Exception as exc:
+        logger.error(f"[UPLOAD] Failed: {exc}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process zip file: {str(exc)}"
         )
 
-@router.post("/upload_github", response_model=UploadResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/upload_github", response_model=UploadResponse, status_code=status.HTTP_202_ACCEPTED)
 async def upload_github_repository(
     background_tasks: BackgroundTasks,
     request: GitHubRepoRequest = Body(...)
@@ -81,14 +88,17 @@ async def upload_github_repository(
         repo = repo[:-4]
         
     try:
+        logger.info(f"[GITHUB] Received: repo={owner}/{repo}")
         project_id, project_dir = create_empty_project_workspace(f"{repo}.zip")
         background_tasks.add_task(process_github_project_background, project_id, owner, repo)
+        logger.info(f"[GITHUB] Acknowledged: project_id={project_id}, background fetching started")
         return UploadResponse(
             project_id=project_id,
-            status="processing",
+            status="queued",
             message=f"GitHub repository '{owner}/{repo}' queued successfully. Background fetching started."
         )
     except Exception as exc:
+        logger.error(f"[GITHUB] Failed: {exc}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process GitHub repository workspace: {str(exc)}"
