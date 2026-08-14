@@ -5,8 +5,14 @@ import tempfile
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.ai.schemas import AIResponse
 from app.services.extractor import extract_zip_file, get_project_directory
-from app.services.chat_service import retrieve_project_context
+from app.services.chat_service import (
+    retrieve_project_context,
+    extract_ai_text,
+    compute_chat_cache_key,
+    _CHAT_CACHE
+)
 
 client = TestClient(app)
 
@@ -43,14 +49,45 @@ def sample_project():
         yield meta.project_id, pdir
 
 
+def test_extract_ai_text_compatibility():
+    """Test: extract_ai_text safely parses AIResponse with .text or .content."""
+    # 1. AIResponse object
+    resp1 = AIResponse(text="Hello from AIResponse", model_used="llama-3.3-70b-versatile")
+    assert extract_ai_text(resp1) == "Hello from AIResponse"
+    assert resp1.content == "Hello from AIResponse"
+
+    # 2. Dict format
+    resp2 = {"text": "Hello from dict"}
+    assert extract_ai_text(resp2) == "Hello from dict"
+
+    # 3. OpenAI/Groq ChatCompletion mock
+    class MockMessage:
+        content = "Hello from message"
+    class MockChoice:
+        message = MockMessage()
+    class MockCompletion:
+        choices = [MockChoice()]
+    assert extract_ai_text(MockCompletion()) == "Hello from message"
+
+
+def test_compute_chat_cache_key_uniqueness():
+    """Test: Distinct questions produce strictly distinct cache keys."""
+    key_coverage = compute_chat_cache_key("proj1", "What is test coverage?", "llama-3.3-70b", "hash1")
+    key_deps = compute_chat_cache_key("proj1", "Explain dependency graph", "llama-3.3-70b", "hash1")
+    key_coverage_repeat = compute_chat_cache_key("proj1", "What is test coverage?", "llama-3.3-70b", "hash1")
+
+    assert key_coverage != key_deps
+    assert key_coverage == key_coverage_repeat
+
+
 def test_chat_empty_message_error():
-    """Test 1: Empty message returns 400 Bad Request."""
+    """Test: Empty message returns 400 Bad Request."""
     res = client.post("/api/chat", json={"message": "   "})
     assert res.status_code == 400
 
 
 def test_chat_context_retrieval_specific_file(sample_project):
-    """Test 2: Context retrieval specifically targets mentioned file."""
+    """Test: Context retrieval specifically targets mentioned file."""
     pid, _ = sample_project
     context, sources, facts = retrieve_project_context(pid, "What functions are in auth.py?")
     assert "auth.py" in context
@@ -60,14 +97,14 @@ def test_chat_context_retrieval_specific_file(sample_project):
 
 
 def test_chat_dependency_retrieval(sample_project):
-    """Test 3: Asking about dependencies retrieves architecture context."""
+    """Test: Asking about dependencies retrieves architecture context."""
     pid, _ = sample_project
     context, sources, facts = retrieve_project_context(pid, "Explain the dependency graph and imports")
     assert "DEPENDENCY" in context or "Files" in context
 
 
 def test_chat_endpoint_valid_request(sample_project):
-    """Test 4: POST /api/chat returns 200 with structured ChatResponse."""
+    """Test: POST /api/chat returns 200 with structured ChatResponse."""
     pid, _ = sample_project
     res = client.post("/api/chat", json={
         "project_id": pid,
@@ -83,7 +120,7 @@ def test_chat_endpoint_valid_request(sample_project):
 
 
 def test_chat_conversation_continuation(sample_project):
-    """Test 5: Providing conversation_id preserves session continuity."""
+    """Test: Providing conversation_id preserves session continuity."""
     pid, _ = sample_project
     conv_id = "test-session-1234"
     res1 = client.post("/api/chat", json={
@@ -104,7 +141,7 @@ def test_chat_conversation_continuation(sample_project):
 
 
 def test_chat_no_project_graceful_handling():
-    """Test 6: Request without project_id returns guidance rather than crashing."""
+    """Test: Request without project_id returns guidance rather than crashing."""
     res = client.post("/api/chat", json={
         "message": "Hello, how do I analyze my code?"
     })

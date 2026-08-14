@@ -2,7 +2,9 @@ import os
 import json
 import uuid
 import re
+import hashlib
 import asyncio
+import logging
 from typing import Dict, List, Optional, Any, Tuple
 
 from app.core.config import load_backend_environment
@@ -11,14 +13,75 @@ from app.schemas.chat import ChatRequest, ChatResponse, SourceReference
 from app.services.extractor import get_project_directory
 from app.services.improvements_service import compute_deterministic_improvements
 
+logger = logging.getLogger("codeoracle.chat")
+
 # In-memory multi-turn conversation store: conversation_id -> list of {"role": "user"|"assistant", "text": "..."}
 _CONVERSATION_HISTORY: Dict[str, List[Dict[str, str]]] = {}
 _MAX_HISTORY_TURNS = 10
+
+# In-memory question-aware response cache: cache_key -> ChatResponse dict
+_CHAT_CACHE: Dict[str, Dict[str, Any]] = {}
+
+def extract_ai_text(response: Any) -> str:
+    """
+    Robust text extraction function matching AIResponse, Groq ChatCompletion, dict, or string.
+    Validates structure before accessing properties to prevent AttributeError.
+    """
+    if response is None:
+        raise ValueError("AI response object is None.")
+    
+    # 1. AIResponse model with .text
+    if hasattr(response, "text") and response.text:
+        return str(response.text).strip()
+        
+    # 2. AIResponse or generic object with .content
+    if hasattr(response, "content") and response.content:
+        return str(response.content).strip()
+        
+    # 3. Direct Groq/OpenAI ChatCompletion (response.choices[0].message.content)
+    if hasattr(response, "choices") and response.choices:
+        first_choice = response.choices[0]
+        if hasattr(first_choice, "message") and first_choice.message:
+            msg_content = getattr(first_choice.message, "content", None)
+            if msg_content:
+                return str(msg_content).strip()
+        if isinstance(first_choice, dict):
+            msg = first_choice.get("message", {})
+            if isinstance(msg, dict) and msg.get("content"):
+                return str(msg["content"]).strip()
+
+    # 4. Dictionary object
+    if isinstance(response, dict):
+        if "text" in response and response["text"]:
+            return str(response["text"]).strip()
+        if "content" in response and response["content"]:
+            return str(response["content"]).strip()
+        if "choices" in response and isinstance(response["choices"], list) and response["choices"]:
+            return str(response["choices"][0].get("message", {}).get("content", "")).strip()
+
+    # 5. Raw string
+    if isinstance(response, str) and response.strip():
+        return response.strip()
+
+    raise ValueError(f"Failed to extract assistant text from response of type '{type(response).__name__}'")
+
+
+def compute_chat_cache_key(project_id: str, question: str, model: str, context_hash: str) -> str:
+    """
+    Generates a deterministic question-aware cache key.
+    Guarantees different questions (e.g. 'What is coverage?' vs 'Explain dependencies')
+    produce strictly different cache keys and never collide.
+    """
+    norm_q = " ".join(question.strip().lower().split())
+    raw = f"chat::{project_id}::{norm_q}::{context_hash}::{model}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
 
 def _get_or_create_conversation_id(conv_id: Optional[str]) -> str:
     if conv_id and conv_id.strip():
         return conv_id.strip()
     return str(uuid.uuid4())[:8]
+
 
 def _read_json_file(file_path: str) -> Optional[Dict[str, Any]]:
     if os.path.exists(file_path):
@@ -28,6 +91,7 @@ def _read_json_file(file_path: str) -> Optional[Dict[str, Any]]:
         except Exception:
             return None
     return None
+
 
 def retrieve_project_context(
     project_id: Optional[str],
@@ -182,15 +246,16 @@ def retrieve_project_context(
 async def generate_chat_response(request: ChatRequest) -> ChatResponse:
     """
     Executes on-demand Groq AI chat with strict system instructions,
-    untrusted data sandboxing, and smart project context retrieval.
+    untrusted data sandboxing, question-aware caching, and robust response extraction.
     """
     load_backend_environment()
     conv_id = _get_or_create_conversation_id(request.conversation_id)
+    user_msg = request.message.strip()
 
     # 1. Retrieve targeted project context
     context_text, sources, verified_facts = retrieve_project_context(
         project_id=request.project_id,
-        user_message=request.message,
+        user_message=user_msg,
         selected_file=request.selected_file,
         selected_function=request.selected_function
     )
@@ -214,11 +279,32 @@ async def generate_chat_response(request: ChatRequest) -> ChatResponse:
             model_used="deterministic-fallback"
         )
 
-    # 2. Prepare System Instruction & Sandboxed Prompt
+    # 2. Check Question-Aware Cache (derived from project_id + question + context_hash + model)
+    context_hash = hashlib.sha256(context_text.encode("utf-8")).hexdigest()[:12]
+    cache_key = compute_chat_cache_key(
+        project_id=request.project_id or "global",
+        question=user_msg,
+        model=provider.model,
+        context_hash=context_hash
+    )
+
+    if cache_key in _CHAT_CACHE:
+        cached_entry = _CHAT_CACHE[cache_key]
+        logger.info(f"[Chat Cache HIT] key={cache_key}, q='{user_msg[:30]}...'")
+        return ChatResponse(
+            answer=cached_entry["answer"],
+            conversation_id=conv_id,
+            sources=sources,
+            verified_facts=verified_facts,
+            recommendations=[],
+            model_used=f"{provider.model} (cached)"
+        )
+
+    # 3. Prepare System Instruction & Sandboxed Prompt
     system_instruction = (
-        "You are CodeOracle AI, an expert technical software architecture and codebase assistant.\n"
-        "Answer project-specific questions strictly from the supplied CodeOracle project context.\n\n"
-        "CRITICAL RULES:\n"
+        "You are CodeOracle, an AI code intelligence assistant for an analyzed software codebase.\n"
+        "Answer the user's CURRENT question directly using the supplied CodeOracle project context.\n\n"
+        "STRICT RULES:\n"
         "1. Never invent files, functions, classes, dependencies, test results, coverage values, breaking changes, architecture details, or implementation behavior.\n"
         "2. If the supplied project context is insufficient to answer accurately, explicitly state: 'I don't have enough analyzed project information to answer that accurately.'\n"
         "3. Distinctly separate verified facts from interpretation or recommendations.\n"
@@ -236,27 +322,38 @@ async def generate_chat_response(request: ChatRequest) -> ChatResponse:
         f"{history_prompt}"
         f"CODEORACLE ANALYZED PROJECT CONTEXT (UNTRUSTED REPOSITORY DATA):\n"
         f"\"\"\"\n{context_text}\n\"\"\"\n\n"
-        f"USER QUESTION:\n{request.message}\n\n"
-        f"Provide a clear, accurate, markdown-formatted response based strictly on the verified context above."
+        f"CURRENT USER QUESTION:\n{user_msg}\n\n"
+        f"INSTRUCTIONS:\n"
+        f"- Answer the user's CURRENT question directly: \"{user_msg}\".\n"
+        f"- Do not repeat generic context dumps. Format with clear Markdown headings, lists, and code blocks."
     )
 
+    logger.info(f"[Chat Request] project_id={request.project_id}, question='{user_msg[:50]}...', model={provider.model}")
+
     try:
-        response = await provider.generate(
+        raw_response = await provider.generate(
             prompt=user_prompt,
             system_prompt=system_instruction,
             temperature=0.3,
             max_tokens=800
         )
 
-        answer_text = response.content or "I was unable to generate an answer for that question."
-        model_name = response.model or provider.model
+        # Robust text extraction helper: never throws 'AIResponse' object has no attribute 'content'
+        answer_text = extract_ai_text(raw_response)
+        model_name = getattr(raw_response, "model_used", None) or provider.model
 
         # Save turn to in-memory conversation history
-        history.append({"role": "User", "text": request.message})
+        history.append({"role": "User", "text": user_msg})
         history.append({"role": "CodeOracle AI", "text": answer_text})
         if len(history) > _MAX_HISTORY_TURNS * 2:
             history = history[-_MAX_HISTORY_TURNS * 2:]
         _CONVERSATION_HISTORY[conv_id] = history
+
+        # Save to question-aware cache
+        _CHAT_CACHE[cache_key] = {
+            "answer": answer_text,
+            "model": model_name
+        }
 
         return ChatResponse(
             answer=answer_text,
@@ -268,8 +365,7 @@ async def generate_chat_response(request: ChatRequest) -> ChatResponse:
         )
 
     except Exception as exc:
-        print(f"[Groq Chat Error]: {exc}")
-        # Graceful error fallback
+        logger.error(f"[Groq Chat Error]: {exc}")
         error_msg = str(exc)
         if "401" in error_msg or "API_KEY_INVALID" in error_msg or "Invalid API Key" in error_msg:
             friendly_err = "The configured `GROQ_API_KEY` is invalid or expired. Please check your `backend/.env` file."

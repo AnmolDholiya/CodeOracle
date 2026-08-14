@@ -22,6 +22,11 @@ class AIResponse(BaseModel):
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
 
+    @property
+    def content(self) -> str:
+        """Compatibility property alias for callers expecting .content instead of .text."""
+        return self.text
+
 # Helper validator to normalize list of items where LLM might return dicts or single strings
 def _normalize_string_list(v: Any) -> List[str]:
     if isinstance(v, str):
