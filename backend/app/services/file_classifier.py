@@ -54,6 +54,19 @@ LANGUAGE_MAP = {
     ".tsx": "TypeScript (React)",
     ".mts": "TypeScript",
     ".cts": "TypeScript",
+    ".java": "Java",
+    ".kt": "Kotlin",
+    ".kts": "Kotlin",
+    ".go": "Go",
+    ".rs": "Rust",
+    ".c": "C",
+    ".h": "C/C++ Header",
+    ".cpp": "C++",
+    ".hpp": "C++ Header",
+    ".cc": "C++",
+    ".cs": "C#",
+    ".php": "PHP",
+    ".rb": "Ruby",
     ".html": "HTML",
     ".htm": "HTML",
     ".css": "CSS",
@@ -69,6 +82,8 @@ LANGUAGE_MAP = {
     ".sql": "SQL",
     ".sh": "Shell",
     ".bash": "Shell",
+    ".zsh": "Shell",
+    ".ps1": "PowerShell",
     ".txt": "Plain Text"
 }
 
@@ -79,7 +94,10 @@ def is_ignored_directory(dir_name: str) -> bool:
 
 def is_binary_extension(ext: str) -> bool:
     """Checks if a file extension is binary/media."""
-    return ext.lower() in BINARY_EXTENSIONS
+    clean = ext.lower().strip()
+    if not clean.startswith(".") and clean:
+        clean = f".{clean}"
+    return clean in BINARY_EXTENSIONS
 
 def should_extract_archive_entry(member_path: str) -> bool:
     """Determines whether a ZIP entry should be extracted to disk.
@@ -107,7 +125,10 @@ def should_extract_archive_entry(member_path: str) -> bool:
         return not is_ignored_directory(parts[-1])
         
     filename = parts[-1]
-    ext = os.path.splitext(filename)[1]
+    if "." in filename:
+        ext = "." + filename.rsplit(".", 1)[1]
+    else:
+        ext = ""
     
     # Reject binary and media extensions
     if is_binary_extension(ext):
@@ -117,19 +138,34 @@ def should_extract_archive_entry(member_path: str) -> bool:
 
 def should_analyze_source_file(file_path: str) -> bool:
     """Determines if a file is a supported source file for AST analysis."""
-    ext = os.path.splitext(file_path)[1].lower()
+    clean = file_path.lower().strip()
+    if "." in clean:
+        ext = "." + clean.rsplit(".", 1)[1]
+    else:
+        ext = clean if clean.startswith(".") else f".{clean}"
     return ext in SOURCE_EXTENSIONS
 
 def get_file_language(file_path_or_ext: str) -> str:
     """Returns the recognized programming language name."""
-    ext = os.path.splitext(file_path_or_ext)[1].lower() if "." in file_path_or_ext else file_path_or_ext.lower()
+    s = file_path_or_ext.strip().lower()
+    if not s:
+        return "Plain Text"
+    if s.startswith(".") and "/" not in s and "\\" not in s:
+        ext = s
+    elif "." in s:
+        ext = "." + s.rsplit(".", 1)[1]
+    else:
+        ext = f".{s}"
     return LANGUAGE_MAP.get(ext, "Plain Text")
 
 def get_file_type(file_path: str) -> str:
     """Detects broad file type category based on extension and filename."""
     clean_path = file_path.replace("\\", "/")
     filename = os.path.basename(clean_path).lower()
-    ext = os.path.splitext(clean_path)[1].lower()
+    if "." in filename:
+        ext = "." + filename.rsplit(".", 1)[1]
+    else:
+        ext = ""
 
     if ext in [".py", ".pyw"]:
         return "python"
@@ -156,7 +192,10 @@ def get_file_type(file_path: str) -> str:
 
 def is_binary_file(file_path: str) -> bool:
     """Determines if a file is binary by checking extension or null bytes in content."""
-    ext = os.path.splitext(file_path)[1].lower()
+    if "." in file_path:
+        ext = "." + file_path.rsplit(".", 1)[1].lower()
+    else:
+        ext = ""
     if ext in BINARY_EXTENSIONS:
         return True
 

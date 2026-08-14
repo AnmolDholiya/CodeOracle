@@ -6,6 +6,7 @@ from typing import Optional, Type, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from groq import Groq
+from app.core.config import load_backend_environment
 from app.ai.provider import AIProvider
 from app.ai.schemas import AIResponse
 from app.ai.prompts import SYSTEM_PROMPT_CODEORACLE
@@ -20,6 +21,8 @@ from app.ai.exceptions import (
 )
 
 T = TypeVar("T", bound=BaseModel)
+
+FALLBACK_MODEL = "llama-3.1-8b-instant"
 
 def get_groq_max_tokens() -> int:
     """Reads GROQ_MAX_OUTPUT_TOKENS or GEMINI_MAX_OUTPUT_TOKENS env variable with fallback to 250."""
@@ -38,6 +41,9 @@ class GroqProvider(AIProvider):
         api_key: Optional[str] = None,
         model: Optional[str] = None
     ):
+        # Refresh environment from .env file so runtime updates are detected immediately
+        load_backend_environment()
+
         self.api_key = (
             api_key or 
             os.getenv("GROQ_API_KEY", "").strip()
@@ -62,6 +68,17 @@ class GroqProvider(AIProvider):
             self.client = None
 
     def _ensure_configured(self):
+        # Re-check environment in case user just added or changed the key in .env
+        load_backend_environment()
+        fresh_key = os.getenv("GROQ_API_KEY", "").strip()
+        if fresh_key and fresh_key != self.api_key and len(fresh_key) > 5:
+            self.api_key = fresh_key
+            try:
+                self.client = Groq(api_key=self.api_key)
+                self.is_configured = True
+            except Exception:
+                pass
+
         if not self.is_configured or not self.client:
             raise AIConfigurationError(
                 "Groq API key is missing or invalid. "
@@ -87,12 +104,14 @@ class GroqProvider(AIProvider):
         ]
 
         last_exc = None
+        current_model = self.model
+
         for attempt in range(2):  # Max 2 attempts
             start_time = time.time()
             try:
                 def _call():
                     return self.client.chat.completions.create(
-                        model=self.model,
+                        model=current_model,
                         messages=messages,
                         temperature=temperature if temperature is not None else 0.2,
                         max_tokens=effective_max_tokens
@@ -110,11 +129,11 @@ class GroqProvider(AIProvider):
                     raise AIProviderError("Groq returned empty text response.")
 
                 # Logging
-                print(f"[Groq Request] type: text, model: {self.model}, cache_hit: false, duration: {duration_ms}ms")
+                print(f"[Groq Request] type: text, model: {current_model}, cache_hit: false, duration: {duration_ms}ms")
 
                 return AIResponse(
                     text=content.strip(),
-                    model_used=self.model,
+                    model_used=current_model,
                     prompt_tokens=getattr(getattr(response, "usage", None), "prompt_tokens", None),
                     completion_tokens=getattr(getattr(response, "usage", None), "completion_tokens", None)
                 )
@@ -122,15 +141,16 @@ class GroqProvider(AIProvider):
             except Exception as exc:
                 last_exc = exc
                 err_str = str(exc)
-                if "429" in err_str or "rate_limit_exceeded" in err_str.lower() or "quota" in err_str.lower():
-                    if attempt == 0:
-                        print(f"[Groq Rate Limit] 429 detected. Backing off for 2.0s (Attempt {attempt + 1}/2)...")
-                        await asyncio.sleep(2.0)
+                if "429" in err_str or "rate_limit_exceeded" in err_str.lower() or "quota" in err_str.lower() or "tpm" in err_str.lower():
+                    if attempt == 0 and current_model != FALLBACK_MODEL:
+                        print(f"[Groq Rate Limit] 429 detected on {current_model}. Falling back to high-capacity {FALLBACK_MODEL} (Attempt 2/2)...")
+                        current_model = FALLBACK_MODEL
+                        await asyncio.sleep(1.0)
                         continue
                     else:
-                        raise AIRateLimitError("Groq API rate limit reached. Please wait before trying again.")
+                        raise AIRateLimitError("Groq API rate limit reached. Please wait a few moments before trying again.")
                 elif "401" in err_str or "invalid_api_key" in err_str.lower() or "authentication" in err_str.lower():
-                    raise AIAuthenticationError("Groq API key authentication failed.")
+                    raise AIAuthenticationError("Groq API key authentication failed. Check your GROQ_API_KEY.")
                 raise AIProviderError(f"Groq generation error: {err_str[:150]}")
 
         raise last_exc or AIProviderError("Groq request failed after 2 attempts.")
@@ -163,10 +183,12 @@ class GroqProvider(AIProvider):
             {"role": "user", "content": prompt}
         ]
 
-        async def _single_attempt(req_messages: list) -> T:
+        current_model = self.model
+
+        async def _single_attempt(req_messages: list, target_model: str) -> T:
             def _call():
                 return self.client.chat.completions.create(
-                    model=self.model,
+                    model=target_model,
                     messages=req_messages,
                     response_format={"type": "json_object"},
                     temperature=temperature if temperature is not None else 0.1,
@@ -214,10 +236,10 @@ class GroqProvider(AIProvider):
         for attempt in range(2):  # Max 2 attempts
             start_time = time.time()
             try:
-                result = await _single_attempt(messages)
+                result = await _single_attempt(messages, current_model)
                 duration_ms = int((time.time() - start_time) * 1000)
 
-                print(f"[Groq Request] type: structured ({schema_class.__name__}), model: {self.model}, cache_hit: false, duration: {duration_ms}ms")
+                print(f"[Groq Request] type: structured ({schema_class.__name__}), model: {current_model}, cache_hit: false, duration: {duration_ms}ms")
                 return result
 
             except AIValidationError as val_err:
@@ -227,9 +249,9 @@ class GroqProvider(AIProvider):
                         {"role": "user", "content": "Return ONLY valid JSON matching the exact schema."}
                     ]
                     try:
-                        result = await _single_attempt(retry_messages)
+                        result = await _single_attempt(retry_messages, current_model)
                         duration_ms = int((time.time() - start_time) * 1000)
-                        print(f"[Groq Request] type: structured ({schema_class.__name__}) (retry), model: {self.model}, cache_hit: false, duration: {duration_ms}ms")
+                        print(f"[Groq Request] type: structured ({schema_class.__name__}) (retry), model: {current_model}, cache_hit: false, duration: {duration_ms}ms")
                         return result
                     except Exception:
                         raise AIValidationError("AI explanation could not be parsed.")
@@ -238,15 +260,16 @@ class GroqProvider(AIProvider):
             except Exception as exc:
                 last_exc = exc
                 err_str = str(exc)
-                if "429" in err_str or "rate_limit_exceeded" in err_str.lower() or "quota" in err_str.lower():
-                    if attempt == 0:
-                        print(f"[Groq Rate Limit] 429 detected. Backing off for 2.0s (Attempt {attempt + 1}/2)...")
-                        await asyncio.sleep(2.0)
+                if "429" in err_str or "rate_limit_exceeded" in err_str.lower() or "quota" in err_str.lower() or "tpm" in err_str.lower():
+                    if attempt == 0 and current_model != FALLBACK_MODEL:
+                        print(f"[Groq Rate Limit] 429 detected on {current_model}. Falling back to high-capacity {FALLBACK_MODEL} (Attempt 2/2)...")
+                        current_model = FALLBACK_MODEL
+                        await asyncio.sleep(1.0)
                         continue
                     else:
-                        raise AIRateLimitError("Groq API rate limit reached. Please wait before trying again.")
+                        raise AIRateLimitError("Groq API rate limit reached. Please wait a few moments before trying again.")
                 elif "401" in err_str or "invalid_api_key" in err_str.lower() or "authentication" in err_str.lower():
-                    raise AIAuthenticationError("Groq API key authentication failed.")
+                    raise AIAuthenticationError("Groq API key authentication failed. Check your GROQ_API_KEY.")
                 raise AIProviderError(f"Groq structured generation error: {err_str[:150]}")
 
         raise last_exc or AIRateLimitError("Groq API rate limit reached. Please wait before trying again.")
