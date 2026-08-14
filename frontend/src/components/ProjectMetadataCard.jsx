@@ -1,10 +1,39 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { FileText, Trash2, Folder, Code, Layers, AlertCircle, CheckCircle2, Sparkles, Hash, Terminal } from 'lucide-react';
 import { deleteProject } from '../services/api';
 
 export default function ProjectMetadataCard({ metadata, onCleanup }) {
   const [cleaning, setCleaning] = useState(false);
   const [cleanupStatus, setCleanupStatus] = useState(null);
+
+  const detectedLanguages = useMemo(() => {
+    if (!metadata) return [];
+    const langSet = new Set(metadata.languages || []);
+    
+    // Supplement from files list in case backend was cached or mid-deployment
+    if (metadata.files && Array.isArray(metadata.files)) {
+      metadata.files.forEach(f => {
+        if (f.language && f.language !== 'Plain Text' && f.language !== 'unknown') {
+          langSet.add(f.language);
+        } else if (f.extension) {
+          const ext = f.extension.toLowerCase();
+          if (ext === '.py' || ext === '.pyw') langSet.add('Python');
+          else if (ext === '.js' || ext === '.mjs' || ext === '.cjs') langSet.add('JavaScript');
+          else if (ext === '.jsx') langSet.add('JavaScript (React)');
+          else if (ext === '.ts' || ext === '.mts' || ext === '.cts') langSet.add('TypeScript');
+          else if (ext === '.tsx') langSet.add('TypeScript (React)');
+          else if (ext === '.html' || ext === '.htm') langSet.add('HTML');
+          else if (ext === '.css' || ext === '.scss' || ext === '.sass' || ext === '.less') langSet.add('CSS');
+          else if (ext === '.json') langSet.add('JSON');
+          else if (ext === '.md' || ext === '.markdown') langSet.add('Markdown');
+          else if (ext === '.yaml' || ext === '.yml') langSet.add('YAML');
+          else if (ext === '.toml') langSet.add('TOML');
+          else if (ext === '.sql') langSet.add('SQL');
+        }
+      });
+    }
+    return Array.from(langSet).sort();
+  }, [metadata]);
 
   const handleCleanup = async () => {
     if (!metadata?.project_id) return;
@@ -76,8 +105,8 @@ export default function ProjectMetadataCard({ metadata, onCleanup }) {
         <div className="detail-item" style={{ gridColumn: 'span 2', background: '#F5F3FF' }}>
           <div className="detail-label" style={{ color: 'var(--accent-purple)' }}>🎨 Detected Languages</div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.4rem' }}>
-            {metadata.languages && metadata.languages.length > 0 ? (
-              metadata.languages.map((lang, idx) => (
+            {detectedLanguages && detectedLanguages.length > 0 ? (
+              detectedLanguages.map((lang, idx) => (
                 <span 
                   key={idx} 
                   style={{ 
