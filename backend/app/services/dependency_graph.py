@@ -107,7 +107,7 @@ def resolve_and_classify_import(
 ) -> Tuple[Optional[str], str, str]:
     """
     Classifies a Python or JS/TS import into:
-    Category A: ('project_file', 'project', full_import_name)
+    Category A: (target_rel_path, 'project', full_import_name)
     Category B: (display_name, 'standard_library' | 'third_party', full_import_name)
     Category C: (full_import_name, 'unresolved', full_import_name)
     """
@@ -116,74 +116,102 @@ def resolve_and_classify_import(
     if not full_import:
         return None, "unresolved", ""
 
-    current_file_clean = current_file_rel.replace("\\", "/")
+    current_file_clean = current_file_rel.replace("\\", "/").strip("/")
+    curr_dir = os.path.dirname(current_file_clean)
+    case_map = {p.lower(): p for p in project_files_set}
 
-    # ----------------------------------------------------
-    # Step 1: Check Relative Imports (Python & JS/TS)
-    # ----------------------------------------------------
-    is_relative = module_name.startswith(".") if module_name else False
-    if is_relative:
-        curr_dir = os.path.dirname(current_file_clean)
-        parts = [p for p in curr_dir.split("/") if p]
+    def match_candidate(cand_path: str) -> Optional[str]:
+        clean = cand_path.replace("\\", "/").strip("/")
+        while "//" in clean:
+            clean = clean.replace("//", "/")
+        if clean in project_files_set and clean != current_file_clean:
+            return clean
+        if clean.lower() in case_map and case_map[clean.lower()] != current_file_clean:
+            return case_map[clean.lower()]
+        return None
 
-        if module_name.startswith("../"):
-            temp = module_name
-            dots = 0
-            while temp.startswith("../"):
-                dots += 1
-                temp = temp[3:]
-            clean_mod = temp.lstrip("/")
-            for _ in range(dots):
-                if parts:
-                    parts.pop()
-            base_dir = "/".join(parts)
-        elif module_name.startswith("./"):
-            clean_mod = module_name[2:]
-            base_dir = curr_dir
-        else:
-            # Python style .module or ..module
-            dots = len(module_name) - len(module_name.lstrip("."))
-            clean_mod = module_name[dots:]
-            for _ in range(max(0, dots - 1)):
-                if parts:
-                    parts.pop()
-            base_dir = "/".join(parts)
+    exts = ["", ".py", ".pyw", ".js", ".jsx", ".ts", ".tsx", "/__init__.py", "/index.js", "/index.jsx", "/index.ts", "/index.tsx"]
+    raw_candidates: List[str] = []
 
-        # Extensions to check (including empty extension if import already specifies .js / .ts / .py)
-        exts = ["", ".py", ".js", ".jsx", ".ts", ".tsx", "/index.js", "/index.jsx", "/index.ts", "/index.tsx"]
-        candidates = []
-        for ext in exts:
-            if base_dir:
-                candidates.append(f"{base_dir}/{clean_mod}{ext}")
-            else:
-                candidates.append(f"{clean_mod}{ext}")
-
-        for cand in candidates:
-            if cand in project_files_set and cand != current_file_clean:
-                return cand, "project", full_import
-
-    # ----------------------------------------------------
-    # Step 2: Check Absolute Project-Local Imports
-    # ----------------------------------------------------
     mod_str = module_name or ""
     sym_str = imported_symbol or ""
 
-    candidates = []
-    exts = ["", ".py", ".js", ".jsx", ".ts", ".tsx", "/index.js", "/index.jsx", "/index.ts", "/index.tsx"]
-    for ext in exts:
-        if mod_str and sym_str:
-            candidates.append(f"{mod_str.replace('.', '/')}/{sym_str}{ext}")
-        if mod_str:
-            candidates.append(f"{mod_str.replace('.', '/')}{ext}")
-            top_mod = mod_str.split(".")[0]
-            candidates.append(f"{top_mod}{ext}")
+    # ----------------------------------------------------
+    # Step 1: Relative dot imports (Python & JS/TS)
+    # ----------------------------------------------------
+    if mod_str.startswith("."):
+        parts = [p for p in curr_dir.split("/") if p]
+        temp = mod_str
+        while temp.startswith("../"):
+            if parts:
+                parts.pop()
+            temp = temp[3:]
+        if temp.startswith("./"):
+            temp = temp[2:]
+        elif temp.startswith("."):
+            dots = len(temp) - len(temp.lstrip("."))
+            for _ in range(max(0, dots - 1)):
+                if parts:
+                    parts.pop()
+            temp = temp[dots:]
 
-    for cand in candidates:
-        if cand in project_files_set and cand != current_file_clean:
-            return cand, "project", full_import
+        clean_mod = temp.replace(".", "/").lstrip("/")
+        base_dir = "/".join(parts)
+
+        if clean_mod:
+            raw_candidates.append(f"{base_dir}/{clean_mod}" if base_dir else clean_mod)
+            if sym_str:
+                raw_candidates.append(f"{base_dir}/{clean_mod}/{sym_str}" if base_dir else f"{clean_mod}/{sym_str}")
+        elif sym_str:
+            raw_candidates.append(f"{base_dir}/{sym_str}" if base_dir else sym_str)
 
     # ----------------------------------------------------
-    # Step 3: Classify into External vs Unresolved
+    # Step 2: Absolute / Bare Project-Local Imports
+    # ----------------------------------------------------
+    else:
+        mod_path = mod_str.replace(".", "/")
+
+        # A. Sibling in same directory
+        if curr_dir:
+            if mod_path:
+                raw_candidates.append(f"{curr_dir}/{mod_path}")
+                if sym_str:
+                    raw_candidates.append(f"{curr_dir}/{mod_path}/{sym_str}")
+            elif sym_str:
+                raw_candidates.append(f"{curr_dir}/{sym_str}")
+
+        # B. Ancestor directories (parent, grandparent, etc.)
+        ancestor_parts = [p for p in curr_dir.split("/") if p]
+        while ancestor_parts:
+            ancestor_parts.pop()
+            p_dir = "/".join(ancestor_parts)
+            if p_dir and mod_path:
+                raw_candidates.append(f"{p_dir}/{mod_path}")
+                if sym_str:
+                    raw_candidates.append(f"{p_dir}/{mod_path}/{sym_str}")
+
+        # C. Workspace Root absolute path
+        if mod_path:
+            raw_candidates.append(mod_path)
+            if sym_str:
+                raw_candidates.append(f"{mod_path}/{sym_str}")
+
+        # D. Project-wide suffix matching (handles root folder wrappers like CONVERSTION/...)
+        if mod_path:
+            for pf in project_files_set:
+                for ext in (".py", ".js", ".ts", ".jsx", ".tsx"):
+                    if pf.endswith(f"/{mod_path}{ext}") or pf.endswith(f"/{mod_path}/{sym_str}{ext}"):
+                        raw_candidates.append(pf)
+
+    # Check candidates for a valid project file match
+    for cand in raw_candidates:
+        for ext in exts:
+            matched = match_candidate(f"{cand}{ext}")
+            if matched:
+                return matched, "project", full_import
+
+    # ----------------------------------------------------
+    # Step 3: Classify into External Library vs Unresolved
     # ----------------------------------------------------
     top_pkg = (module_name or imported_symbol or "").lstrip("./").split("/")[0].split(".")[0]
 
@@ -206,14 +234,14 @@ def resolve_and_classify_import(
 
 def generate_dependency_graph(ast_analysis: ProjectAnalysisResponse) -> DependencyGraphResponse:
     """
-    Generates structured project dependency graph, external libraries, and unresolved imports.
+    Generates structured project dependency graph, external libraries, node classifications, and edges.
     """
     # 1. Build set of project files and initial node registry
     project_files_set: Set[str] = set()
     nodes_map: Dict[str, DependencyNode] = {}
 
     for file_ast in ast_analysis.files_analyzed:
-        rel_path = file_ast.relative_path.replace("\\", "/")
+        rel_path = file_ast.relative_path.replace("\\", "/").strip("/")
         project_files_set.add(rel_path)
 
         total_methods = sum(len(c.methods) for c in file_ast.classes)
@@ -222,7 +250,7 @@ def generate_dependency_graph(ast_analysis: ProjectAnalysisResponse) -> Dependen
         nodes_map[rel_path] = DependencyNode(
             id=rel_path,
             label=os.path.basename(rel_path),
-            type="file",
+            type="module",  # Will be classified based on in-degree / out-degree
             relative_path=rel_path,
             lines_of_code=file_ast.lines_of_code,
             classes_count=len(file_ast.classes),
@@ -242,7 +270,7 @@ def generate_dependency_graph(ast_analysis: ProjectAnalysisResponse) -> Dependen
 
     # 2. Process each file's imports
     for file_ast in ast_analysis.files_analyzed:
-        source_rel = file_ast.relative_path.replace("\\", "/")
+        source_rel = file_ast.relative_path.replace("\\", "/").strip("/")
         node = nodes_map[source_rel]
 
         node_proj_deps = set()
@@ -280,7 +308,39 @@ def generate_dependency_graph(ast_analysis: ProjectAnalysisResponse) -> Dependen
         node.external_libraries = sorted(list(node_ext_deps))
         node.unresolved_imports = sorted(list(node_unres_deps))
 
-    # 3. Format External Libraries grouped list
+    # 3. Classify node categories based on in-degree and out-degree
+    in_degree: Dict[str, int] = {nid: 0 for nid in nodes_map}
+    out_degree: Dict[str, int] = {nid: len(n.project_dependencies) for nid, n in nodes_map.items()}
+
+    for src, tgt in edges_set:
+        if tgt in in_degree:
+            in_degree[tgt] += 1
+
+    for nid, node in nodes_map.items():
+        in_deg = in_degree[nid]
+        out_deg = out_degree[nid]
+        base_name = os.path.basename(node.relative_path).lower()
+        name_no_ext = os.path.splitext(base_name)[0]
+
+        if in_deg == 0 and out_deg > 0:
+            # Root Entry Point (not imported by any other project file, imports other files)
+            node.type = "root"
+        elif in_deg > 0 and out_deg == 0:
+            # Utility / Helper (imported by other project files, imports no local files)
+            node.type = "utility"
+        elif in_deg > 0 and out_deg > 0:
+            # Intermediate core module
+            node.type = "module"
+        else:
+            # Isolated file (in_deg == 0 and out_deg == 0)
+            if any(k in name_no_ext for k in ("main", "app", "index", "server", "run", "cli", "manage", "entry")):
+                node.type = "root"
+            elif any(k in name_no_ext for k in ("util", "helper", "const", "type", "config", "tool", "math")):
+                node.type = "utility"
+            else:
+                node.type = "module"
+
+    # 4. Format External Libraries grouped list
     external_libraries_list: List[ExternalLibraryDetail] = []
     for (lib_name, lib_type), imp_set in sorted(external_grouped.items(), key=lambda x: x[0][0]):
         external_libraries_list.append(ExternalLibraryDetail(
@@ -290,7 +350,7 @@ def generate_dependency_graph(ast_analysis: ProjectAnalysisResponse) -> Dependen
             imports=sorted(list(imp_set))
         ))
 
-    # 4. Construct Nodes and Edges
+    # 5. Construct Nodes and Edges
     nodes_list = list(nodes_map.values())
     edges_list = [
         DependencyEdge(
@@ -301,6 +361,13 @@ def generate_dependency_graph(ast_analysis: ProjectAnalysisResponse) -> Dependen
         )
         for src, tgt in sorted(list(edges_set))
     ]
+
+    # Debug logging for verification
+    print(f"[Dependency Graph Debug] Generated {len(nodes_list)} nodes and {len(edges_list)} edges:")
+    for n in nodes_list:
+        print(f"  • Node id='{n.id}', type='{n.type}', out_deps={len(n.project_dependencies)}")
+    for e in edges_list:
+        print(f"  → Edge: '{e.source}' -> '{e.target}'")
 
     return DependencyGraphResponse(
         project_id=ast_analysis.project_id,
