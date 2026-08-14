@@ -195,7 +195,13 @@ async def generate_chat_response(request: ChatRequest) -> ChatResponse:
     )
 
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+    raw_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip() or "gemini-2.0-flash"
+    
+    # Auto-normalize outdated or deprecated model strings
+    if "gemini-2.5" in raw_model:
+        model_name = "gemini-2.0-flash"
+    else:
+        model_name = raw_model
 
     # Fallback if Gemini API Key is not set
     if not api_key:
@@ -246,10 +252,9 @@ async def generate_chat_response(request: ChatRequest) -> ChatResponse:
 
         client = genai.Client(api_key=api_key)
 
-        # Call Gemini SDK in asyncio thread pool so FastAPI async loop is never blocked
-        def _call_gemini():
+        def _call_gemini(m_name: str):
             return client.models.generate_content(
-                model=model_name,
+                model=m_name,
                 contents=user_prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
@@ -258,7 +263,17 @@ async def generate_chat_response(request: ChatRequest) -> ChatResponse:
                 )
             )
 
-        response = await asyncio.to_thread(_call_gemini)
+        try:
+            response = await asyncio.to_thread(_call_gemini, model_name)
+        except Exception as model_err:
+            err_str = str(model_err)
+            if "404" in err_str or "NOT_FOUND" in err_str or "no longer available" in err_str:
+                # Automatic cascade fallback to gemini-1.5-flash
+                model_name = "gemini-1.5-flash"
+                response = await asyncio.to_thread(_call_gemini, model_name)
+            else:
+                raise model_err
+
         answer_text = response.text or "I was unable to generate an answer for that question."
 
         # Save turn to in-memory conversation history
