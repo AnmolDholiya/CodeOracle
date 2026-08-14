@@ -8,13 +8,15 @@ import Explanation from './components/Explanation';
 import UnitTestCard from './components/UnitTestCard';
 import RefactorCard from './components/RefactorCard';
 import BreakingChangeCard from './components/BreakingChangeCard';
+import ImprovementsCard from './components/ImprovementsCard';
 import { 
   Sparkles, 
   RefreshCw,
   FileText,
   GitFork,
   FlaskConical,
-  Zap
+  Zap,
+  Wrench
 } from 'lucide-react';
 
 function App() {
@@ -26,7 +28,7 @@ function App() {
   // Project Metadata
   const [projectData, setProjectData] = useState(null);
 
-  // Active Feature Navigation Tab: 'explanation' | 'dependency_graph' | 'unit_tests' | 'refactor_breaking'
+  // Active Feature Navigation Tab: 'explanation' | 'dependency_graph' | 'unit_tests' | 'refactor_breaking' | 'improvements'
   const [activeFeatureTab, setActiveFeatureTab] = useState('explanation');
 
   // On-demand health check
@@ -38,64 +40,75 @@ function App() {
       const data = await checkHealth();
       setHealth(data);
     } catch (err) {
-      setHealthError(err.message || 'Failed to connect to backend server');
+      console.error('Health check failed:', err);
+      setHealthError('API is waking up or offline. Please wait…');
+      // Automatic retry/wake-up
+      wakeBackendUp();
     } finally {
       setHealthLoading(false);
     }
   };
 
-  // Initial mount: use wake-up with retries
-  const initialWakeUp = async () => {
-    setHealthLoading(true);
-    setHealthError(null);
+  const wakeBackendUp = async () => {
     setHealthStage('Connecting to backend…');
-    try {
-      const data = await wakeUpBackend((stage, attempt, maxAttempts) => {
-        if (stage === 'connecting') setHealthStage('Connecting to backend…');
-        else if (stage === 'waking' || stage === 'retrying') setHealthStage(`Backend is waking up… (${attempt}/${maxAttempts})`);
-        else if (stage === 'ready') setHealthStage('');
-      });
+    const ok = await wakeUpBackend((msg) => setHealthStage(msg));
+    if (ok) {
+      const data = await checkHealth();
       setHealth(data);
-    } catch (err) {
-      setHealthError('Backend is temporarily unavailable. Click "API Health" to retry.');
-    } finally {
-      setHealthLoading(false);
+      setHealthError(null);
+      setHealthStage('');
+    } else {
+      setHealthError('Could not reach backend. If hosted on free tier, it may take 50s to wake.');
       setHealthStage('');
     }
   };
 
   useEffect(() => {
-    initialWakeUp();
+    fetchHealth();
   }, []);
 
-  const handleUploadSuccess = (metadata) => {
-    setProjectData(metadata);
+  const handleUploadSuccess = (data) => {
+    setProjectData(data);
     setActiveFeatureTab('explanation');
   };
 
   const handleCleanupSuccess = () => {
     setProjectData(null);
-    setActiveFeatureTab('explanation');
   };
 
   return (
     <div className="app-container">
-      {/* Navbar */}
+      {/* Header / Navbar */}
       <nav className="navbar">
-        <div className="brand">
-          <Sparkles className="brand-icon" size={26} />
-          <span>CodeOracle</span>
+        <div className="navbar-logo">
+          <div className="logo-icon-ps">
+            <Sparkles size={22} />
+          </div>
+          <span className="logo-text">CodeOracle</span>
         </div>
-        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-          {healthStage && (
-            <span style={{ fontSize: '0.85rem', color: 'var(--accent-warning)', fontWeight: 700, fontFamily: 'var(--font-heading)' }}>
-              {healthStage}
-            </span>
-          )}
+
+        {/* Global Health Status Chip */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <button 
-            className="btn-refresh" 
-            onClick={fetchHealth}
+            className="btn-health" 
+            onClick={fetchHealth} 
             disabled={healthLoading}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              background: health ? '#EBFDF2' : (healthLoading ? '#FFFBF0' : '#FFF0F0'),
+              color: health ? 'var(--accent-success)' : (healthLoading ? 'var(--accent-warning)' : 'var(--accent-error)'),
+              border: `2px solid ${health ? 'var(--accent-success)' : (healthLoading ? 'var(--accent-warning)' : 'var(--accent-error)')}`,
+              boxShadow: `2.5px 2.5px 0px ${health ? 'var(--accent-success)' : (healthLoading ? 'var(--accent-warning)' : 'var(--accent-error)')}`,
+              padding: '0.45rem 1rem',
+              borderRadius: 'var(--radius-pill)',
+              fontWeight: 800,
+              fontSize: '0.85rem',
+              cursor: 'pointer',
+              fontFamily: 'var(--font-heading)',
+              transition: 'all 0.15s ease'
+            }}
           >
             <RefreshCw size={15} className={healthLoading ? 'spin' : ''} />
             {healthLoading ? (healthStage ? 'Waking…' : 'Checking…') : 'API Health'}
@@ -145,7 +158,7 @@ function App() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: '0.5rem',
-                  padding: '0.65rem 1.25rem',
+                  padding: '0.65rem 1.15rem',
                   borderRadius: 'var(--radius-pill)',
                   border: activeFeatureTab === 'explanation' ? '2px solid var(--ink)' : '2px solid transparent',
                   background: activeFeatureTab === 'explanation' ? '#FFD000' : 'transparent',
@@ -173,7 +186,7 @@ function App() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: '0.5rem',
-                  padding: '0.65rem 1.25rem',
+                  padding: '0.65rem 1.15rem',
                   borderRadius: 'var(--radius-pill)',
                   border: activeFeatureTab === 'dependency_graph' ? '2px solid var(--ink)' : '2px solid transparent',
                   background: activeFeatureTab === 'dependency_graph' ? '#FFD000' : 'transparent',
@@ -201,7 +214,7 @@ function App() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: '0.5rem',
-                  padding: '0.65rem 1.25rem',
+                  padding: '0.65rem 1.15rem',
                   borderRadius: 'var(--radius-pill)',
                   border: activeFeatureTab === 'unit_tests' ? '2px solid var(--ink)' : '2px solid transparent',
                   background: activeFeatureTab === 'unit_tests' ? '#FFD000' : 'transparent',
@@ -229,7 +242,7 @@ function App() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: '0.5rem',
-                  padding: '0.65rem 1.25rem',
+                  padding: '0.65rem 1.15rem',
                   borderRadius: 'var(--radius-pill)',
                   border: activeFeatureTab === 'refactor_breaking' ? '2px solid var(--ink)' : '2px solid transparent',
                   background: activeFeatureTab === 'refactor_breaking' ? '#FFD000' : 'transparent',
@@ -245,7 +258,35 @@ function App() {
                 }}
               >
                 <Zap size={17} style={{ color: activeFeatureTab === 'refactor_breaking' ? 'var(--ink)' : 'var(--text-secondary)' }} />
-                <span>4. Refactored Code & Breaking Changes</span>
+                <span>4. Refactored Code</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveFeatureTab('improvements')}
+                style={{
+                  flex: '1 1 auto',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '0.5rem',
+                  padding: '0.65rem 1.15rem',
+                  borderRadius: 'var(--radius-pill)',
+                  border: activeFeatureTab === 'improvements' ? '2px solid var(--ink)' : '2px solid transparent',
+                  background: activeFeatureTab === 'improvements' ? '#FFD000' : 'transparent',
+                  color: 'var(--ink)',
+                  fontSize: '0.92rem',
+                  fontWeight: 800,
+                  fontFamily: 'var(--font-heading)',
+                  cursor: 'pointer',
+                  boxShadow: activeFeatureTab === 'improvements' ? '2px 2px 0px var(--ink)' : 'none',
+                  transform: activeFeatureTab === 'improvements' ? 'translate(-1px, -1px)' : 'none',
+                  transition: 'all 0.15s cubic-bezier(0.34, 1.56, 0.64, 1)',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                <Wrench size={17} style={{ color: activeFeatureTab === 'improvements' ? 'var(--ink)' : 'var(--text-secondary)' }} />
+                <span>5. Improvements</span>
               </button>
             </div>
 
@@ -267,6 +308,10 @@ function App() {
                 <RefactorCard projectId={projectData.project_id} projectFiles={projectData.files} />
                 <BreakingChangeCard projectId={projectData.project_id} projectFiles={projectData.files} />
               </>
+            )}
+
+            {activeFeatureTab === 'improvements' && (
+              <ImprovementsCard projectId={projectData.project_id} />
             )}
           </>
         )}

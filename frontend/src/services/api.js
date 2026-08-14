@@ -217,4 +217,18 @@ export const explainBreakingChanges = async (projectId, filePath, changes = [], 
   return response.data;
 };
 
+// ─── Improvements & Recommendations ─────────────────────────────────
+
+export const getProjectImprovements = async (projectId) => {
+  const response = await api.get(`/api/projects/${projectId}/improvements`);
+  return response.data;
+};
+
+export const explainProjectImprovements = async (projectId, focusCategory = null) => {
+  const response = await api.post(`/api/projects/${projectId}/improvements/explain`, {
+    focus_category: focusCategory
+  });
+  return response.data;
+};
+
 export default api;
