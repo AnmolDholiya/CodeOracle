@@ -78,7 +78,11 @@ export default function ImprovementsCard({ projectId }) {
       setData(res);
     } catch (err) {
       console.error('Failed to load project improvements:', err);
-      setError(formatApiErrorMessage(err, 'Failed to calculate project improvements'));
+      if (err.response?.status === 404) {
+        setError('Project workspace expired or server restarted. Please re-upload your ZIP archive to generate fresh recommendations.');
+      } else {
+        setError(formatApiErrorMessage(err, 'Failed to calculate project improvements'));
+      }
     } finally {
       setLoading(false);
     }
