@@ -6,11 +6,12 @@ import asyncio
 from typing import Dict, List, Optional, Any, Tuple
 
 from app.core.config import load_backend_environment
+from app.ai import get_ai_provider
 from app.schemas.chat import ChatRequest, ChatResponse, SourceReference
 from app.services.extractor import get_project_directory
 from app.services.improvements_service import compute_deterministic_improvements
 
-# In-memory multi-turn conversation store: conversation_id -> list of {"role": "user"|"model", "text": "..."}
+# In-memory multi-turn conversation store: conversation_id -> list of {"role": "user"|"assistant", "text": "..."}
 _CONVERSATION_HISTORY: Dict[str, List[Dict[str, str]]] = {}
 _MAX_HISTORY_TURNS = 10
 
@@ -180,7 +181,7 @@ def retrieve_project_context(
 
 async def generate_chat_response(request: ChatRequest) -> ChatResponse:
     """
-    Executes on-demand Google Gemini API chat with strict system instructions,
+    Executes on-demand Groq AI chat with strict system instructions,
     untrusted data sandboxing, and smart project context retrieval.
     """
     load_backend_environment()
@@ -194,29 +195,22 @@ async def generate_chat_response(request: ChatRequest) -> ChatResponse:
         selected_function=request.selected_function
     )
 
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    raw_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip() or "gemini-2.0-flash"
-    
-    # Auto-normalize outdated or deprecated model strings
-    if "gemini-2.5" in raw_model:
-        model_name = "gemini-2.0-flash"
-    else:
-        model_name = raw_model
+    provider = get_ai_provider()
 
-    # Fallback if Gemini API Key is not set
-    if not api_key:
+    # Fallback if Groq Provider is not configured
+    if not provider or not provider.is_configured:
         answer = (
             f"### 🤖 CodeOracle AI Assistant\n\n"
             f"**Project Verified Facts:**\n"
             f"{context_text}\n\n"
-            f"> 💡 **Setup Note:** To enable live Gemini AI conversational reasoning, add `GEMINI_API_KEY=your_key` to your `backend/.env` file."
+            f"> 💡 **Setup Note:** To enable live Groq AI conversational reasoning, ensure `GROQ_API_KEY=your_key` is set in your `backend/.env` file."
         )
         return ChatResponse(
             answer=answer,
             conversation_id=conv_id,
             sources=sources,
             verified_facts=verified_facts,
-            recommendations=["Add GEMINI_API_KEY to backend/.env for generative responses."],
+            recommendations=["Add GROQ_API_KEY to backend/.env for live AI responses."],
             model_used="deterministic-fallback"
         )
 
@@ -247,34 +241,15 @@ async def generate_chat_response(request: ChatRequest) -> ChatResponse:
     )
 
     try:
-        from google import genai
-        from google.genai import types
+        response = await provider.generate(
+            prompt=user_prompt,
+            system_prompt=system_instruction,
+            temperature=0.3,
+            max_tokens=800
+        )
 
-        client = genai.Client(api_key=api_key)
-
-        def _call_gemini(m_name: str):
-            return client.models.generate_content(
-                model=m_name,
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=0.3,
-                    max_output_tokens=1200
-                )
-            )
-
-        try:
-            response = await asyncio.to_thread(_call_gemini, model_name)
-        except Exception as model_err:
-            err_str = str(model_err)
-            if "404" in err_str or "NOT_FOUND" in err_str or "no longer available" in err_str:
-                # Automatic cascade fallback to gemini-1.5-flash
-                model_name = "gemini-1.5-flash"
-                response = await asyncio.to_thread(_call_gemini, model_name)
-            else:
-                raise model_err
-
-        answer_text = response.text or "I was unable to generate an answer for that question."
+        answer_text = response.content or "I was unable to generate an answer for that question."
+        model_name = response.model or provider.model
 
         # Save turn to in-memory conversation history
         history.append({"role": "User", "text": request.message})
@@ -293,15 +268,15 @@ async def generate_chat_response(request: ChatRequest) -> ChatResponse:
         )
 
     except Exception as exc:
-        print(f"[Gemini Chat Error]: {exc}")
+        print(f"[Groq Chat Error]: {exc}")
         # Graceful error fallback
         error_msg = str(exc)
-        if "401" in error_msg or "API_KEY_INVALID" in error_msg or "API key not valid" in error_msg:
-            friendly_err = "The configured `GEMINI_API_KEY` is invalid or expired. Please check your `.env` file."
-        elif "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-            friendly_err = "Gemini API rate limit reached. Please wait a moment before asking another question."
+        if "401" in error_msg or "API_KEY_INVALID" in error_msg or "Invalid API Key" in error_msg:
+            friendly_err = "The configured `GROQ_API_KEY` is invalid or expired. Please check your `backend/.env` file."
+        elif "429" in error_msg or "rate_limit_exceeded" in error_msg:
+            friendly_err = "Groq API rate limit reached. Please wait a few seconds before asking another question."
         else:
-            friendly_err = f"Gemini AI reasoning service is temporarily unavailable: {error_msg}"
+            friendly_err = f"Groq AI reasoning service is temporarily unavailable: {error_msg}"
 
         return ChatResponse(
             answer=f"⚠️ **AI Service Notice:**\n{friendly_err}\n\n**Verified Codebase Context:**\n{context_text}",
