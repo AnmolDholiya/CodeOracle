@@ -47,6 +47,14 @@ def create_synthetic_zip(target_mb: float, file_count: int = 20) -> bytes:
             
     return buf.getvalue()
 
+import pytest
+
+@pytest.mark.parametrize("label,target_mb", [
+    ("1 MB ZIP", 1.0),
+    ("10 MB ZIP", 10.0),
+    ("50 MB ZIP", 50.0),
+    ("135 MB ZIP (Production Target)", 135.0),
+])
 def test_zip_upload_size(label: str, target_mb: float):
     print(f"\n==================================================")
     print(f"TESTING {label} ({target_mb:.1f} MB)")

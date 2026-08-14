@@ -1,16 +1,16 @@
 import React, { useState, useRef } from 'react';
-import { UploadCloud, FileArchive, CheckCircle2, AlertCircle, Loader2, Cpu, Github, ArrowRight, Server, Wifi } from 'lucide-react';
+import { UploadCloud, FileArchive, CheckCircle2, AlertCircle, Loader2, Cpu, Github, ArrowRight, Server, FileCode, GitBranch } from 'lucide-react';
 import { uploadProjectZip, uploadGithubRepo, getProjectStatus, getProjectInfo, formatApiError, wakeUpBackend } from '../services/api';
 
 // Stage labels for UX progress display
 const STAGE_LABELS = {
   queued: 'Queued for processing…',
-  extracting: 'Extracting ZIP archive…',
+  extracting: 'Extracting files safely…',
   discovering_files: 'Discovering files & calculating line counts…',
-  analyzing_python: 'Analyzing Python AST symbols & imports…',
-  analyzing_javascript: 'Indexing JavaScript/TypeScript source files…',
-  building_dependencies: 'Building import dependency graph…',
-  completed: 'Analysis complete!',
+  analyzing_python: 'Analyzing Python AST symbols…',
+  analyzing_javascript: 'Analyzing JavaScript/TypeScript…',
+  building_dependencies: 'Building dependency graph…',
+  completed: 'Complete ✓',
   failed: 'Processing failed.',
 };
 
@@ -85,13 +85,13 @@ export default function ZipUploadCard({ onUploadSuccess }) {
     let pollCount = 0;
 
     const getDelay = (count) => {
-      if (count === 0) return 1000;
-      if (count === 1) return 2000;
-      if (count === 2) return 3000;
-      return 5000; // all subsequent polls
+      if (count === 0) return 600;
+      if (count === 1) return 1200;
+      if (count === 2) return 2000;
+      return 3000; // all subsequent polls
     };
 
-    const MAX_POLLS = 120; // safety cap: ~10 minutes max
+    const MAX_POLLS = 150; // safety cap: ~10 minutes max
 
     const checkStatus = async () => {
       try {
@@ -104,6 +104,8 @@ export default function ZipUploadCard({ onUploadSuccess }) {
           // Fetch final processed metadata
           const metadata = await getProjectInfo(projectId);
           setStatus('success');
+          setProgress(100);
+          setStageMessage('Complete ✓');
           if (onUploadSuccess) {
             onUploadSuccess(metadata);
           }
@@ -133,17 +135,21 @@ export default function ZipUploadCard({ onUploadSuccess }) {
   const startUpload = async (fileToUpload) => {
     setStatus('uploading');
     setProgress(0);
-    setStageMessage('Uploading zip archive…');
+    setStageMessage('Uploading ZIP… 0%');
 
     try {
       const data = await uploadProjectZip(fileToUpload, (percent) => {
-        setProgress(Math.min(percent, 90));
-        setStageMessage('Uploading zip archive…');
+        setProgress(percent);
+        setStageMessage(`Uploading ZIP… ${percent}%`);
       });
 
       if (data.project_id) {
-        setStageMessage('Upload successful. Analysis started.');
-        pollProcessingStatus(data.project_id);
+        setProgress(100);
+        setStageMessage('Upload complete ✓');
+        // Brief pause for visual confirmation then poll
+        setTimeout(() => {
+          pollProcessingStatus(data.project_id);
+        }, 350);
       } else {
         throw new Error('Upload response missing project ID');
       }
@@ -171,7 +177,7 @@ export default function ZipUploadCard({ onUploadSuccess }) {
       setStatus('uploading');
       setProgress(15);
       setErrorMsg('');
-      setStageMessage('Fetching repository ZIP archive from GitHub…');
+      setStageMessage('Fetching repository archive from GitHub…');
 
       try {
         const data = await uploadGithubRepo(githubUrl.trim());
@@ -216,7 +222,6 @@ export default function ZipUploadCard({ onUploadSuccess }) {
     setProgress(0);
     setStageMessage('');
     setErrorMsg('');
-    // Preserve `file` state so user doesn't have to re-select
   };
 
   const handleRetryWithFile = () => {
@@ -228,16 +233,15 @@ export default function ZipUploadCard({ onUploadSuccess }) {
     }
   };
 
-  // ─── Determine if interaction is blocked ──────────────────────────
-
   const isBlocked = status === 'waking' || status === 'uploading' || status === 'processing';
 
-  // ─── Wake-Up Stage Icon ───────────────────────────────────────────
+  // ─── Wake-Up / Progress Stage Icon ────────────────────────────────
 
   const getStatusIcon = () => {
     if (status === 'waking') return <Server size={16} className="spin" style={{ color: 'var(--accent-secondary)' }} />;
-    if (status === 'uploading') return <Loader2 size={16} className="spin" />;
+    if (status === 'uploading') return <Loader2 size={16} className="spin" style={{ color: 'var(--accent-primary)' }} />;
     if (status === 'processing') return <Cpu size={16} style={{ color: 'var(--accent-secondary)' }} />;
+    if (status === 'success') return <CheckCircle2 size={16} style={{ color: 'var(--accent-success)' }} />;
     return null;
   };
 

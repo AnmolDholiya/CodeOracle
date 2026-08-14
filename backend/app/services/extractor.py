@@ -8,6 +8,15 @@ import logging
 import tempfile
 from typing import Dict, List, Tuple, Optional
 from app.schemas.project import ProjectMetadata, FileDetail, ProjectStatusResponse
+from app.services.file_classifier import (
+    is_ignored_directory,
+    is_binary_extension,
+    should_extract_archive_entry,
+    get_file_language,
+    IGNORED_DIRS,
+    BINARY_EXTENSIONS,
+    LANGUAGE_MAP
+)
 
 # Base directory for temporary uploads
 BASE_TEMP_DIR = os.path.join(tempfile.gettempdir(), "codeoracle_projects")
@@ -21,25 +30,6 @@ MAX_UNCOMPRESSED_SIZE = 1024 * 1024 * 1024 # 1 GB max total extracted size (arch
 MAX_FILE_COUNT = 50_000                     # Max files inside ZIP
 MAX_SINGLE_FILE_SIZE = 100 * 1024 * 1024   # 100 MB max single extracted file
 UPLOAD_CHUNK_SIZE = 1024 * 1024            # 1 MB streaming chunk
-
-# Language extension mapping
-LANGUAGE_MAP = {
-    ".py": "Python",
-    ".js": "JavaScript",
-    ".jsx": "JavaScript (React)",
-    ".ts": "TypeScript",
-    ".tsx": "TypeScript (React)",
-    ".html": "HTML",
-    ".css": "CSS",
-    ".json": "JSON",
-    ".md": "Markdown",
-}
-
-# Directories to skip during scanning
-IGNORED_DIRS = {
-    "__pycache__", ".git", "node_modules", ".venv", "venv", 
-    "env", ".pytest_cache", ".idea", ".vscode", "dist", "build"
-}
 
 def is_safe_path(base_dir: str, target_path: str) -> bool:
     """Path traversal prevention check (Zip Slip vulnerability guard)."""
@@ -101,7 +91,7 @@ def init_project_workspace(original_filename: str) -> Tuple[str, str, str]:
     """Creates a project workspace directory and returns (project_id, project_dir, zip_path).
     
     Used by the streaming upload handler — the caller writes the ZIP file to zip_path
-    in chunks, so no bytes are passed here.
+    in chunks, so no bytes are passed in memory.
     """
     project_id = str(uuid.uuid4())[:8]
     project_dir = os.path.join(BASE_TEMP_DIR, project_id)
@@ -132,7 +122,6 @@ def create_project_workspace(file_bytes: bytes, original_filename: str) -> Tuple
     with open(zip_path, "wb") as f:
         f.write(file_bytes)
 
-    # Initialize status file
     update_project_status(
         project_dir=project_dir,
         status="queued",
@@ -204,110 +193,124 @@ def process_github_project_background(project_id: str, owner: str, repo: str):
         )
 
 def process_project_background(project_id: str, original_filename: str):
-    """Background task performing ZIP extraction, file scanning, AST analysis, and dependency graph generation."""
+    """Background task performing selective ZIP extraction, parallel static analysis, and dependency graph generation."""
+    t_start = time.time()
     try:
         project_dir = get_project_directory(project_id)
         zip_path = os.path.join(project_dir, "uploaded_archive.zip")
         logger.info(f"[WORKER] Starting background processing: project_id={project_id}, filename={original_filename}")
 
-        # Stage 1: Extraction (with archive bomb protection)
-        update_project_status(project_dir, "processing", "extracting", 15, "Extracting ZIP archive safely...")
+        # ── Stage 1: Filtered ZIP Extraction with Security & Bomb Guards ─────
+        update_project_status(project_dir, "processing", "extracting", 15, "Extracting codebase safely (filtering ignored directories & binaries)...")
+        t_extract_start = time.time()
+        
         if os.path.exists(zip_path):
             try:
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    # ── Archive bomb & security pre-checks ──────────────
                     members = zip_ref.infolist()
                     if len(members) > MAX_FILE_COUNT:
-                        raise ValueError(f"ZIP contains {len(members)} files — exceeds limit of {MAX_FILE_COUNT}.")
+                        raise ValueError(f"Archive exceeds the supported extraction limits (contains {len(members)} files, max {MAX_FILE_COUNT}).")
                     
                     total_uncompressed = 0
+                    entries_to_extract = []
+
                     for member in members:
+                        filename = member.filename
                         # Block absolute paths
-                        if member.filename.startswith('/') or member.filename.startswith('\\'):
-                            raise ValueError(f"Security Alert: Absolute path in zip: {member.filename}")
+                        if filename.startswith('/') or filename.startswith('\\'):
+                            raise ValueError(f"Security Alert: Absolute path in zip: {filename}")
+                        
                         # Block path traversal (e.g. '../secret.txt' or 'a/../../b')
-                        normalized_parts = member.filename.replace('\\', '/').split('/')
+                        normalized_parts = filename.replace('\\', '/').split('/')
                         if any(part == '..' for part in normalized_parts):
-                            raise ValueError(f"Security Alert: Path traversal detected in zip: {member.filename}")
-                        target_path = os.path.join(project_dir, member.filename)
+                            raise ValueError(f"Security Alert: Path traversal detected in zip: {filename}")
+                            
+                        target_path = os.path.join(project_dir, filename)
                         if not is_safe_path(project_dir, target_path):
-                            raise ValueError(f"Security Alert: Malformed path detected in zip: {member.filename}")
-                        # Individual file size check
-                        if member.file_size > MAX_SINGLE_FILE_SIZE:
-                            raise ValueError(
-                                f"File '{member.filename}' is {member.file_size / (1024*1024):.1f} MB — "
-                                f"exceeds {MAX_SINGLE_FILE_SIZE / (1024*1024):.0f} MB limit."
-                            )
+                            raise ValueError(f"Security Alert: Malformed path detected in zip: {filename}")
+                            
                         total_uncompressed += member.file_size
-                    
+                        
+                        # Check selective extraction filter
+                        if should_extract_archive_entry(filename):
+                            if member.file_size > MAX_SINGLE_FILE_SIZE:
+                                raise ValueError(
+                                    f"File '{filename}' is {member.file_size / (1024*1024):.1f} MB — "
+                                    f"exceeds {MAX_SINGLE_FILE_SIZE / (1024*1024):.0f} MB limit."
+                                )
+                            entries_to_extract.append(member)
+
                     if total_uncompressed > MAX_UNCOMPRESSED_SIZE:
                         raise ValueError(
-                            f"Total uncompressed size ({total_uncompressed / (1024*1024):.0f} MB) "
-                            f"exceeds {MAX_UNCOMPRESSED_SIZE / (1024*1024):.0f} MB limit (archive bomb protection)."
+                            f"Archive exceeds the supported extraction limits: uncompressed size "
+                            f"({total_uncompressed / (1024*1024):.0f} MB) exceeds {MAX_UNCOMPRESSED_SIZE / (1024*1024):.0f} MB limit."
                         )
-                    
-                    logger.info(f"[WORKER] project_id={project_id} ZIP pre-check passed: "
-                                f"{len(members)} files, {total_uncompressed / (1024*1024):.1f} MB uncompressed")
-                    
-                    # ── Safe extraction ─────────────────────────────────
-                    for member in members:
+                        
+                    logger.info(
+                        f"[WORKER] project_id={project_id} ZIP check passed: total={len(members)} members, "
+                        f"filtered_to_extract={len(entries_to_extract)} members, uncompressed={total_uncompressed / (1024*1024):.1f} MB"
+                    )
+
+                    # Extract only valid entries
+                    for member in entries_to_extract:
                         target_path = os.path.join(project_dir, member.filename)
                         if not is_safe_path(project_dir, target_path):
                             raise ValueError(f"Security Alert: Malformed path detected in zip: {member.filename}")
                         zip_ref.extract(member, project_dir)
+
             except zipfile.BadZipFile:
                 raise ValueError("Invalid or corrupted ZIP archive file.")
             finally:
                 if os.path.exists(zip_path):
                     os.remove(zip_path)
+                    
+        t_extract_end = time.time()
+        logger.info(f"[TIMING] EXTRACTION_FINISHED in {t_extract_end - t_extract_start:.3f}s for project_id={project_id}")
 
-        # Stage 2: File Scanning
-        update_project_status(project_dir, "processing", "discovering_files", 35, "Discovering codebase files & calculating line counts...")
-        files_metadata, languages, total_loc = scan_project_directory(project_dir)
-        logger.info(f"[WORKER] project_id={project_id} discovered {len(files_metadata)} files, {total_loc} LOC, languages={languages}")
-
-        metadata = ProjectMetadata(
-            project_id=project_id,
-            original_filename=original_filename,
-            extracted_path=project_dir,
-            total_files=len(files_metadata),
-            total_lines_of_code=total_loc,
-            languages=languages,
-            files=files_metadata,
-            created_at=time.strftime("%Y-%m-%d %H:%M:%S")
-        )
-
+        # ── Stage 2: Unified Parallel Static Analysis & File Discovery ───────
+        update_project_status(project_dir, "processing", "discovering_files", 35, "Scanning codebase and parsing AST symbols...")
+        t_analysis_start = time.time()
+        
+        from app.services.python_ast import scan_and_analyze_workspace
+        metadata, ast_analysis = scan_and_analyze_workspace(project_dir, project_id, original_filename)
+        
         # Cache metadata JSON
         meta_cache_path = os.path.join(project_dir, "project_metadata.json")
         with open(meta_cache_path, "w", encoding="utf-8") as f:
             f.write(metadata.model_dump_json(indent=2))
 
-        # Stage 3: Python AST Analysis
-        update_project_status(project_dir, "processing", "analyzing_python", 55, "Scanning Python AST symbols and imports...")
-        from app.services.python_ast import analyze_project_workspace
-        ast_analysis = analyze_project_workspace(project_dir, project_id)
+        # Cache AST analysis JSON
         ast_cache_path = os.path.join(project_dir, "analysis_ast.json")
         with open(ast_cache_path, "w", encoding="utf-8") as f:
             f.write(ast_analysis.model_dump_json(indent=2))
+            
+        t_analysis_end = time.time()
+        logger.info(
+            f"[TIMING] ANALYSIS_FINISHED in {t_analysis_end - t_analysis_start:.3f}s for project_id={project_id}: "
+            f"files={metadata.total_files}, LOC={metadata.total_lines_of_code}, "
+            f"classes={ast_analysis.total_classes}, functions={ast_analysis.total_functions}, imports={ast_analysis.total_imports}"
+        )
 
-        # Stage 4: JavaScript/TypeScript indexing (lightweight — files are analyzed on-demand)
-        update_project_status(project_dir, "processing", "analyzing_javascript", 75, "Indexing JavaScript/TypeScript source files...")
-        # JS/TS AST analysis is performed on-demand per-file via the explanation/testing endpoints.
-        # This stage confirms JS/TS files are discovered and indexed in metadata.
-        js_ts_count = sum(1 for f in files_metadata if f.extension in ('.js', '.jsx', '.ts', '.tsx'))
-        logger.info(f"[WORKER] project_id={project_id} JS/TS files indexed: {js_ts_count}")
+        # ── Stage 3: JavaScript/TypeScript Indexing ──────────────────────────
+        update_project_status(project_dir, "processing", "analyzing_javascript", 75, "Indexed JavaScript & TypeScript components...")
 
-        # Stage 5: Dependency Graph
+        # ── Stage 4: In-Memory Dependency Graph Generation ───────────────────
         update_project_status(project_dir, "processing", "building_dependencies", 90, "Building import dependency graph...")
+        t_dep_start = time.time()
+        
         from app.services.dependency_graph import generate_dependency_graph
         graph = generate_dependency_graph(ast_analysis)
         dep_cache_path = os.path.join(project_dir, "dependency_graph.json")
         with open(dep_cache_path, "w", encoding="utf-8") as f:
             f.write(graph.model_dump_json(indent=2))
+            
+        t_dep_end = time.time()
+        logger.info(f"[TIMING] DEPS_FINISHED in {t_dep_end - t_dep_start:.3f}s for project_id={project_id}: nodes={len(graph.nodes)}, edges={len(graph.edges)}")
 
-        # Stage 6: Completed
+        # ── Stage 5: Completed ───────────────────────────────────────────────
+        total_duration = time.time() - t_start
         update_project_status(project_dir, "completed", "completed", 100, "Project processing completed successfully!")
-        logger.info(f"[WORKER] Completed: project_id={project_id}")
+        logger.info(f"[WORKER] COMPLETED project_id={project_id} in total {total_duration:.3f}s")
 
     except Exception as exc:
         logger.error(f"[WORKER] Failed: project_id={project_id}, error={exc}")
@@ -335,17 +338,9 @@ def extract_zip_file(file_bytes: bytes, original_filename: str) -> ProjectMetada
         with open(meta_cache_path, "r", encoding="utf-8") as f:
             return ProjectMetadata(**json.load(f))
 
-    files_metadata, languages, total_loc = scan_project_directory(project_dir)
-    return ProjectMetadata(
-        project_id=project_id,
-        original_filename=original_filename,
-        extracted_path=project_dir,
-        total_files=len(files_metadata),
-        total_lines_of_code=total_loc,
-        languages=languages,
-        files=files_metadata,
-        created_at=time.strftime("%Y-%m-%d %H:%M:%S")
-    )
+    from app.services.python_ast import scan_and_analyze_workspace
+    metadata, _ = scan_and_analyze_workspace(project_dir, project_id, original_filename)
+    return metadata
 
 def scan_project_directory(project_dir: str) -> Tuple[List[FileDetail], List[str], int]:
     """Scans project files, computes line counts, and identifies languages."""
@@ -354,20 +349,19 @@ def scan_project_directory(project_dir: str) -> Tuple[List[FileDetail], List[str
     total_loc = 0
 
     for root, dirs, files in os.walk(project_dir):
-        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
+        dirs[:] = [d for d in dirs if not is_ignored_directory(d)]
 
         for file in files:
             ext = os.path.splitext(file)[1].lower()
-            rel_path = os.path.relpath(os.path.join(root, file), project_dir).replace("\\", "/")
-            abs_path = os.path.join(root, file)
-
-            # Skip binary, system, or internal workspace cache files
-            if ext in [".zip", ".png", ".jpg", ".jpeg", ".ico", ".exe", ".pyc"]:
+            if is_binary_extension(ext):
                 continue
             if file in {"status.json", "project_metadata.json", "analysis_ast.json", "dependency_graph.json", "explanation_cache.json", "uploaded_archive.zip"}:
                 continue
 
-            lang = LANGUAGE_MAP.get(ext, "Plain Text")
+            rel_path = os.path.relpath(os.path.join(root, file), project_dir).replace("\\", "/")
+            abs_path = os.path.join(root, file)
+
+            lang = get_file_language(ext)
             if lang != "Plain Text":
                 languages_found.add(lang)
 
@@ -390,8 +384,7 @@ def count_lines_of_code(file_path: str) -> int:
     """Counts non-empty lines of code in a file."""
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = [line.strip() for line in f if line.strip()]
-            return len(lines)
+            return sum(1 for line in f if line.strip())
     except Exception:
         return 0
 
