@@ -3,11 +3,14 @@ import { API_BASE_URL } from '../config';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000,
+  timeout: 120000, // 120 seconds to easily handle Render free tier cold-starts
 });
 
 export const formatApiError = (err, fallbackMsg = 'An error occurred.') => {
   if (!err) return fallbackMsg;
+  if (err.code === 'ECONNABORTED' || (err.message && err.message.toLowerCase().includes('timeout'))) {
+    return 'Server connection timed out (Render cold-start in progress). Please wait a few seconds and try again.';
+  }
   const detail = err.response?.data?.detail;
   if (!detail) return err.message || fallbackMsg;
   if (typeof detail === 'string') return detail;
