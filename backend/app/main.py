@@ -14,6 +14,7 @@ from app.api.testing_routes import router as testing_router
 from app.api.refactoring_routes import router as refactoring_router
 from app.api.breaking_change_routes import router as breaking_change_router
 from app.api.improvement_routes import router as improvements_router
+from app.api.chat_routes import router as chat_router
 
 app = FastAPI(
     title="CodeOracle API",
@@ -58,6 +59,7 @@ app.include_router(testing_router)
 app.include_router(refactoring_router)
 app.include_router(breaking_change_router)
 app.include_router(improvements_router)
+app.include_router(chat_router)
 
 START_TIME = time.time()
 

@@ -231,4 +231,17 @@ export const explainProjectImprovements = async (projectId, focusCategory = null
   return response.data;
 };
 
+// ─── CodeOracle AI Chatbot ──────────────────────────────────────────
+
+export const sendChatMessage = async (projectId, message, conversationId = null, selectedFile = null, selectedFunction = null) => {
+  const response = await api.post('/api/chat', {
+    project_id: projectId,
+    message: message,
+    conversation_id: conversationId,
+    selected_file: selectedFile,
+    selected_function: selectedFunction
+  });
+  return response.data;
+};
+
 export default api;

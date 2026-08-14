@@ -9,6 +9,7 @@ import UnitTestCard from './components/UnitTestCard';
 import RefactorCard from './components/RefactorCard';
 import BreakingChangeCard from './components/BreakingChangeCard';
 import ImprovementsCard from './components/ImprovementsCard';
+import ChatbotWidget from './components/ChatbotWidget';
 import { 
   Sparkles, 
   RefreshCw,
@@ -338,6 +339,9 @@ function App() {
       <footer className="footer">
         CodeOracle &copy; 2026 — AI-Powered Legacy Codebase Explainer & Modernizer
       </footer>
+
+      {/* Floating AI Chatbot Widget */}
+      <ChatbotWidget projectId={projectData?.project_id} />
     </div>
   );
 }
