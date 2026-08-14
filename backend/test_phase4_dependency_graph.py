@@ -108,7 +108,7 @@ def test_phase4_dependency_classification():
         "/api/projects/upload",
         files={"file": ("django_sample_project.zip", zip_bytes, "application/zip")}
     )
-    assert res_upload.status_code == 201, f"Upload failed: {res_upload.text}"
+    assert res_upload.status_code in (201, 202), f"Upload failed: {res_upload.text}"
     project_id = res_upload.json()["project_id"]
     print(f"[PASS] Setup: Uploaded test project ZIP. Project ID: {project_id}")
 

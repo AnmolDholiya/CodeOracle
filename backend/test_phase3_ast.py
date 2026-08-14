@@ -86,7 +86,7 @@ def test_phase3_ast_analysis():
         "/api/projects/upload",
         files={"file": ("sample_ast_project.zip", zip_bytes, "application/zip")}
     )
-    assert res_upload.status_code == 201, f"Upload failed: {res_upload.text}"
+    assert res_upload.status_code in (201, 202), f"Upload failed: {res_upload.text}"
     upload_data = res_upload.json()
     project_id = upload_data["project_id"]
     print(f"[PASS] 1. Uploaded sample AST project ZIP. Project ID: {project_id}")

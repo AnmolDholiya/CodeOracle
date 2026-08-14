@@ -36,6 +36,7 @@ export const formatApiError = (err, fallbackMsg = 'An error occurred.') => {
     : (err.message || fallbackMsg);
 
   if (status === 400) return { type: 'VALIDATION_ERROR', message: msg };
+  if (status === 413) return { type: 'VALIDATION_ERROR', message: msg || 'ZIP archive exceeds the supported upload size limit.' };
   if (status === 401 || status === 403) return { type: 'CORS_ERROR', message: msg };
   if (status === 404) return { type: 'PROCESSING_ERROR', message: msg };
   if (status === 429) return { type: 'RATE_LIMIT', message: msg };
@@ -98,7 +99,7 @@ export const wakeUpBackend = async (onProgress) => {
 
 export const checkHealth = async () => {
   try {
-    const response = await api.get('/api/health');
+    const response = await api.get('/api/health', { timeout: 10000 });
     return response.data;
   } catch (error) {
     console.error('API Health Check Error:', error);
@@ -116,7 +117,7 @@ export const uploadProjectZip = async (file, onUploadProgress) => {
     headers: {
       'Content-Type': 'multipart/form-data',
     },
-    timeout: 60000, // 60s for actual file transfer (backend is already awake)
+    timeout: 300000, // 300s (5 min) for large file upload transfer over network
     onUploadProgress: (progressEvent) => {
       if (onUploadProgress && progressEvent.total) {
         const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
@@ -131,6 +132,8 @@ export const uploadProjectZip = async (file, onUploadProgress) => {
 export const uploadGithubRepo = async (repoUrl) => {
   const response = await api.post('/api/projects/upload_github', {
     repo_url: repoUrl
+  }, {
+    timeout: 60000
   });
   return response.data;
 };
@@ -148,7 +151,9 @@ export const getProjectInfo = async (projectId) => {
 };
 
 export const getProjectStatus = async (projectId) => {
-  const response = await api.get(`/api/projects/${projectId}/status`);
+  const response = await api.get(`/api/projects/${projectId}/status`, {
+    timeout: 15000
+  });
   return response.data;
 };
 

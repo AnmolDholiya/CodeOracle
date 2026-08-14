@@ -15,6 +15,13 @@ os.makedirs(BASE_TEMP_DIR, exist_ok=True)
 
 logger = logging.getLogger("codeoracle.extractor")
 
+# ── Upload & Security Limits ────────────────────────────────────────
+MAX_UPLOAD_SIZE = 200 * 1024 * 1024        # 200 MB max ZIP upload
+MAX_UNCOMPRESSED_SIZE = 1024 * 1024 * 1024 # 1 GB max total extracted size (archive bomb guard)
+MAX_FILE_COUNT = 50_000                     # Max files inside ZIP
+MAX_SINGLE_FILE_SIZE = 100 * 1024 * 1024   # 100 MB max single extracted file
+UPLOAD_CHUNK_SIZE = 1024 * 1024            # 1 MB streaming chunk
+
 # Language extension mapping
 LANGUAGE_MAP = {
     ".py": "Python",
@@ -90,8 +97,33 @@ def get_project_status(project_id: str) -> ProjectStatusResponse:
         message="Project processing ready."
     )
 
+def init_project_workspace(original_filename: str) -> Tuple[str, str, str]:
+    """Creates a project workspace directory and returns (project_id, project_dir, zip_path).
+    
+    Used by the streaming upload handler — the caller writes the ZIP file to zip_path
+    in chunks, so no bytes are passed here.
+    """
+    project_id = str(uuid.uuid4())[:8]
+    project_dir = os.path.join(BASE_TEMP_DIR, project_id)
+    os.makedirs(project_dir, exist_ok=True)
+    zip_path = os.path.join(project_dir, "uploaded_archive.zip")
+
+    # Initialize status file
+    update_project_status(
+        project_dir=project_dir,
+        status="queued",
+        stage="queued",
+        progress=5,
+        message="ZIP archive uploaded. Queued for processing..."
+    )
+
+    return project_id, project_dir, zip_path
+
 def create_project_workspace(file_bytes: bytes, original_filename: str) -> Tuple[str, str]:
-    """Saves uploaded ZIP file to temp workspace and returns (project_id, project_dir)."""
+    """Saves uploaded ZIP file to temp workspace and returns (project_id, project_dir).
+    
+    Legacy compatibility — prefer init_project_workspace + streaming for large files.
+    """
     project_id = str(uuid.uuid4())[:8]
     project_dir = os.path.join(BASE_TEMP_DIR, project_id)
     os.makedirs(project_dir, exist_ok=True)
@@ -178,12 +210,47 @@ def process_project_background(project_id: str, original_filename: str):
         zip_path = os.path.join(project_dir, "uploaded_archive.zip")
         logger.info(f"[WORKER] Starting background processing: project_id={project_id}, filename={original_filename}")
 
-        # Stage 1: Extraction
+        # Stage 1: Extraction (with archive bomb protection)
         update_project_status(project_dir, "processing", "extracting", 15, "Extracting ZIP archive safely...")
         if os.path.exists(zip_path):
             try:
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    for member in zip_ref.infolist():
+                    # ── Archive bomb & security pre-checks ──────────────
+                    members = zip_ref.infolist()
+                    if len(members) > MAX_FILE_COUNT:
+                        raise ValueError(f"ZIP contains {len(members)} files — exceeds limit of {MAX_FILE_COUNT}.")
+                    
+                    total_uncompressed = 0
+                    for member in members:
+                        # Block absolute paths
+                        if member.filename.startswith('/') or member.filename.startswith('\\'):
+                            raise ValueError(f"Security Alert: Absolute path in zip: {member.filename}")
+                        # Block path traversal (e.g. '../secret.txt' or 'a/../../b')
+                        normalized_parts = member.filename.replace('\\', '/').split('/')
+                        if any(part == '..' for part in normalized_parts):
+                            raise ValueError(f"Security Alert: Path traversal detected in zip: {member.filename}")
+                        target_path = os.path.join(project_dir, member.filename)
+                        if not is_safe_path(project_dir, target_path):
+                            raise ValueError(f"Security Alert: Malformed path detected in zip: {member.filename}")
+                        # Individual file size check
+                        if member.file_size > MAX_SINGLE_FILE_SIZE:
+                            raise ValueError(
+                                f"File '{member.filename}' is {member.file_size / (1024*1024):.1f} MB — "
+                                f"exceeds {MAX_SINGLE_FILE_SIZE / (1024*1024):.0f} MB limit."
+                            )
+                        total_uncompressed += member.file_size
+                    
+                    if total_uncompressed > MAX_UNCOMPRESSED_SIZE:
+                        raise ValueError(
+                            f"Total uncompressed size ({total_uncompressed / (1024*1024):.0f} MB) "
+                            f"exceeds {MAX_UNCOMPRESSED_SIZE / (1024*1024):.0f} MB limit (archive bomb protection)."
+                        )
+                    
+                    logger.info(f"[WORKER] project_id={project_id} ZIP pre-check passed: "
+                                f"{len(members)} files, {total_uncompressed / (1024*1024):.1f} MB uncompressed")
+                    
+                    # ── Safe extraction ─────────────────────────────────
+                    for member in members:
                         target_path = os.path.join(project_dir, member.filename)
                         if not is_safe_path(project_dir, target_path):
                             raise ValueError(f"Security Alert: Malformed path detected in zip: {member.filename}")

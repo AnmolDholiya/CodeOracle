@@ -2,6 +2,7 @@ import os
 import json
 import re
 import logging
+import zipfile
 import urllib.request
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Body, status
 from app.schemas.project import ProjectMetadata, CleanupResponse, ProjectStatusResponse, UploadResponse, GitHubRepoRequest
@@ -10,12 +11,15 @@ from app.schemas.dependency import DependencyGraphResponse
 from app.services.extractor import (
     create_project_workspace,
     create_empty_project_workspace,
+    init_project_workspace,
     process_project_background,
     process_github_project_background,
     get_project_status,
     cleanup_project,
     get_project_directory,
-    scan_project_directory
+    scan_project_directory,
+    MAX_UPLOAD_SIZE,
+    UPLOAD_CHUNK_SIZE,
 )
 from app.services.python_ast import analyze_project_workspace
 from app.services.dependency_graph import generate_dependency_graph
@@ -28,24 +32,54 @@ async def upload_project_zip(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
 ):
-    """Uploads a legacy codebase ZIP archive, creates workspace, and starts background extraction & scanning."""
+    """Uploads a legacy codebase ZIP archive via streaming, creates workspace, and starts background processing."""
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid file type. Only .zip codebase archives are supported."
         )
     
-    contents = await file.read()
-    file_size = len(contents)
-    if file_size == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded file is empty."
-        )
-        
+    # Create workspace and get the target ZIP path
+    project_id, project_dir, zip_path = init_project_workspace(file.filename)
+    
     try:
-        logger.info(f"[UPLOAD] Received ZIP: filename={file.filename}, size={file_size} bytes")
-        project_id, project_dir = create_project_workspace(contents, file.filename)
+        # Stream file to disk in chunks — avoids loading 130+ MB into RAM
+        total_written = 0
+        logger.info(f"[UPLOAD] Streaming ZIP to disk: filename={file.filename}, project_id={project_id}")
+        
+        with open(zip_path, "wb") as f:
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_written += len(chunk)
+                if total_written > MAX_UPLOAD_SIZE:
+                    # Clean up partial file and workspace
+                    f.close()
+                    cleanup_project(project_id)
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"ZIP archive exceeds the {MAX_UPLOAD_SIZE // (1024*1024)} MB upload limit."
+                    )
+                f.write(chunk)
+        
+        if total_written == 0:
+            cleanup_project(project_id)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Uploaded file is empty."
+            )
+        
+        # Validate the saved file is actually a valid ZIP
+        if not zipfile.is_zipfile(zip_path):
+            cleanup_project(project_id)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid ZIP archive. The uploaded file is not a valid ZIP."
+            )
+        
+        logger.info(f"[UPLOAD] Streamed {total_written} bytes to disk for project_id={project_id}")
+        
         # Launch non-blocking background processing task
         background_tasks.add_task(process_project_background, project_id, file.filename)
         logger.info(f"[UPLOAD] Acknowledged: project_id={project_id}, background processing started")
@@ -55,14 +89,11 @@ async def upload_project_zip(
             status="queued",
             message="Project uploaded successfully and processing has started."
         )
-    except ValueError as val_err:
-        logger.warning(f"[UPLOAD] Validation error: {val_err}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(val_err)
-        )
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is
     except Exception as exc:
         logger.error(f"[UPLOAD] Failed: {exc}")
+        cleanup_project(project_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process zip file: {str(exc)}"

@@ -33,7 +33,7 @@ def test_live_server_endpoints():
             files={"file": ("sample.zip", zip_bytes, "application/zip")}
         )
         t_elapsed = time.time() - t0
-        assert res_upload.status_code == 201, f"Upload failed: {res_upload.text}"
+        assert res_upload.status_code in (201, 202), f"Upload failed: {res_upload.text}"
         upload_data = res_upload.json()
         project_id = upload_data["project_id"]
         assert t_elapsed < 1.0, f"Upload took too long ({t_elapsed:.2f}s)"

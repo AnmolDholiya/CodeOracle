@@ -331,7 +331,7 @@ export default function ZipUploadCard({ onUploadSuccess }) {
                 {file.name}
               </p>
               <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-                {(file.size / 1024).toFixed(1)} KB — Click to select a different file, or{' '}
+                {file.size >= 1024 * 1024 ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` : `${(file.size / 1024).toFixed(1)} KB`} — Click to select a different file, or{' '}
                 <span
                   onClick={(e) => { e.stopPropagation(); handleRetryWithFile(); }}
                   style={{ color: 'var(--accent-primary)', textDecoration: 'underline', cursor: 'pointer', fontWeight: 600 }}

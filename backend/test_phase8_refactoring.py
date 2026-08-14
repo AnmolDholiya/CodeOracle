@@ -58,7 +58,7 @@ def run_phase8_test_suite():
         "/api/projects/upload",
         files={"file": ("legacy_project.zip", zip_bytes, "application/zip")}
     )
-    assert up_res.status_code == 201, f"Upload failed: {up_res.text}"
+    assert up_res.status_code in (201, 202), f"Upload failed: {up_res.text}"
     project_id = up_res.json()["project_id"]
     print(f"[PASS] TEST 1: Uploaded legacy project successfully (ID: {project_id})\n")
 

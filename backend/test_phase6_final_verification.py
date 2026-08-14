@@ -33,7 +33,7 @@ def run_phase6_final_verification():
         "/api/projects/upload",
         files={"file": ("legacy_project.zip", zip_bytes, "application/zip")}
     )
-    assert up_res.status_code == 201, f"Upload failed: {up_res.text}"
+    assert up_res.status_code in (201, 202), f"Upload failed: {up_res.text}"
     project_id = up_res.json()["project_id"]
     print(f"[Uploaded Project ID]: {project_id}\n")
 

@@ -227,7 +227,7 @@ def run_all_phase6_fix_tests():
         "/api/projects/upload",
         files={"file": ("phase6_fix_test.zip", zip_bytes, "application/zip")}
     )
-    assert res.status_code == 201
+    assert res.status_code in (201, 202)
     project_id = res.json()["project_id"]
 
     try:

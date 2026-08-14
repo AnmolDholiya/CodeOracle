@@ -3,6 +3,7 @@ import os
 import time
 from typing import List, Optional, Set, Tuple
 from app.schemas.ast import (
+    ASTFileAnalysis,
     PythonFileAnalysis,
     ImportDetail,
     ClassDetail,

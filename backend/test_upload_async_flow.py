@@ -47,10 +47,10 @@ def test_1_small_zip_upload_and_status_polling():
     )
     t_elapsed = time.time() - t0
 
-    assert res.status_code == 201, f"Upload failed: {res.text}"
+    assert res.status_code in (201, 202), f"Upload failed: {res.text}"
     data = res.json()
     assert "project_id" in data
-    assert data["status"] == "processing"
+    assert data["status"] in ("queued", "processing")
     assert t_elapsed < 1.0, f"Upload request took too long ({t_elapsed:.2f}s)! Expected <1.0s"
     print(f"[PASS] Test 1: Small ZIP uploaded in {t_elapsed * 1000:.1f}ms (returned project_id: {data['project_id']})")
 
@@ -78,7 +78,7 @@ def test_2_medium_zip_upload():
     zip_bytes = create_mock_zip(files)
 
     res = client.post("/api/projects/upload", files={"file": ("medium.zip", zip_bytes, "application/zip")})
-    assert res.status_code == 201
+    assert res.status_code in (201, 202)
     project_id = res.json()["project_id"]
 
     # Poll until completed
@@ -104,7 +104,7 @@ def test_3_large_10k_loc_zip_upload():
     res = client.post("/api/projects/upload", files={"file": ("large_10k_project.zip", zip_bytes, "application/zip")})
     t_elapsed = time.time() - t0
 
-    assert res.status_code == 201, f"Upload failed: {res.text}"
+    assert res.status_code in (201, 202), f"Upload failed: {res.text}"
     project_id = res.json()["project_id"]
     assert t_elapsed < 2.0, f"Upload request took {t_elapsed:.2f}s! Expected instant return (<2s)"
     print(f"[PASS] Test 3: 10,000 LOC ZIP upload request returned in {t_elapsed:.2f}s (No timeout!)")
@@ -130,7 +130,7 @@ def test_4_zip_with_many_files():
     zip_bytes = create_mock_zip(files)
 
     res = client.post("/api/projects/upload", files={"file": ("many_files.zip", zip_bytes, "application/zip")})
-    assert res.status_code == 201
+    assert res.status_code in (201, 202)
     project_id = res.json()["project_id"]
 
     for _ in range(20):
@@ -162,7 +162,7 @@ def test_7_malformed_python_source():
     """Test 7: ZIP with malformed Python files processes AST without crashing."""
     zip_bytes = create_mock_zip({"valid.py": "x = 10", "broken.py": "def broken(:"})
     res = client.post("/api/projects/upload", files={"file": ("malformed.zip", zip_bytes, "application/zip")})
-    assert res.status_code == 201
+    assert res.status_code in (201, 202)
     project_id = res.json()["project_id"]
 
     for _ in range(10):
@@ -182,7 +182,7 @@ def test_8_zip_with_external_libraries():
         "app.py": "from django.http import HttpResponse\nimport requests"
     })
     res = client.post("/api/projects/upload", files={"file": ("ext_lib.zip", zip_bytes, "application/zip")})
-    assert res.status_code == 201
+    assert res.status_code in (201, 202)
     project_id = res.json()["project_id"]
 
     for _ in range(10):
