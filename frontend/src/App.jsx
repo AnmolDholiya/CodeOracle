@@ -122,7 +122,7 @@ function App() {
           <div className="hero">
             <h1 className="hero-title">Understand your legacy code.<br />Modernize it with confidence.</h1>
             <p className="hero-subtitle">
-              Analyze legacy Python, JavaScript and TypeScript codebases, generate unit tests, refactor safely, and detect breaking changes with AI.
+              Analyze code, generate unit tests, refactor safely and detect breaking changes with AI.
             </p>
           </div>
         )}
