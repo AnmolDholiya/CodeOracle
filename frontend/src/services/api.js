@@ -117,7 +117,7 @@ export const uploadProjectZip = async (file, onUploadProgress) => {
     headers: {
       'Content-Type': 'multipart/form-data',
     },
-    timeout: 300000, // 300s (5 min) for large file upload transfer over network
+    timeout: 600000, // 600s (10 min) for up to 350 MB large ZIP archive transfer
     onUploadProgress: (progressEvent) => {
       if (onUploadProgress && progressEvent.total) {
         const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);

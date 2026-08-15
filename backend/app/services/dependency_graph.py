@@ -365,9 +365,9 @@ def generate_dependency_graph(ast_analysis: ProjectAnalysisResponse) -> Dependen
     # Debug logging for verification
     print(f"[Dependency Graph Debug] Generated {len(nodes_list)} nodes and {len(edges_list)} edges:")
     for n in nodes_list:
-        print(f"  • Node id='{n.id}', type='{n.type}', out_deps={len(n.project_dependencies)}")
+        print(f"  - Node id='{n.id}', type='{n.type}', out_deps={len(n.project_dependencies)}")
     for e in edges_list:
-        print(f"  → Edge: '{e.source}' -> '{e.target}'")
+        print(f"  -> Edge: '{e.source}' -> '{e.target}'")
 
     return DependencyGraphResponse(
         project_id=ast_analysis.project_id,

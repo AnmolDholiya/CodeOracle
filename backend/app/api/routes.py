@@ -24,6 +24,11 @@ from app.services.extractor import (
 from app.services.python_ast import analyze_project_workspace
 from app.services.dependency_graph import generate_dependency_graph
 
+from app.tasks import (
+    dispatch_project_processing,
+    dispatch_github_processing
+)
+
 router = APIRouter(prefix="/api/projects", tags=["Projects"])
 logger = logging.getLogger("codeoracle.routes")
 
@@ -32,7 +37,8 @@ async def upload_project_zip(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
 ):
-    """Uploads a legacy codebase ZIP archive via streaming, creates workspace, and starts background processing."""
+    """Uploads a legacy codebase ZIP archive via streaming, creates workspace, and enqueues Celery background task."""
+    logger.info(f"[UPLOAD_RECEIVED] filename={file.filename}")
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -41,6 +47,7 @@ async def upload_project_zip(
     
     # Create workspace and get the target ZIP path
     project_id, project_dir, zip_path = init_project_workspace(file.filename)
+    logger.info(f"[PROJECT_CREATED] project_id={project_id}, dir={project_dir}")
     
     try:
         # Stream file to disk in chunks — avoids loading 130+ MB into RAM
@@ -80,14 +87,14 @@ async def upload_project_zip(
         
         logger.info(f"[UPLOAD] Streamed {total_written} bytes to disk for project_id={project_id}")
         
-        # Launch non-blocking background processing task
-        background_tasks.add_task(process_project_background, project_id, file.filename)
-        logger.info(f"[UPLOAD] Acknowledged: project_id={project_id}, background processing started")
+        # Enqueue Celery background processing task (with fallback if Redis is offline)
+        dispatch_project_processing(project_id, file.filename, background_tasks=background_tasks)
+        logger.info(f"[CELERY_TASK_QUEUED] project_id={project_id}, returning HTTP 202")
         
         return UploadResponse(
             project_id=project_id,
             status="queued",
-            message="Project uploaded successfully and processing has started."
+            message="Project uploaded successfully. Processing started."
         )
     except HTTPException:
         raise  # Re-raise HTTP exceptions as-is
@@ -104,7 +111,7 @@ async def upload_github_repository(
     background_tasks: BackgroundTasks,
     request: GitHubRepoRequest = Body(...)
 ):
-    """Fetches a public GitHub repository ZIP archive, creates workspace, and runs existing pipeline."""
+    """Fetches a public GitHub repository ZIP archive, creates workspace, and enqueues Celery background task."""
     url_clean = request.repo_url.strip()
     match = re.search(r"github\.com/([^/]+)/([^/\?#]+?)(?:\.git)?(?:/|$)", url_clean, re.IGNORECASE)
     if not match:
@@ -119,14 +126,15 @@ async def upload_github_repository(
         repo = repo[:-4]
         
     try:
-        logger.info(f"[GITHUB] Received: repo={owner}/{repo}")
+        logger.info(f"[GITHUB_RECEIVED] repo={owner}/{repo}")
         project_id, project_dir = create_empty_project_workspace(f"{repo}.zip")
-        background_tasks.add_task(process_github_project_background, project_id, owner, repo)
-        logger.info(f"[GITHUB] Acknowledged: project_id={project_id}, background fetching started")
+        logger.info(f"[PROJECT_CREATED] project_id={project_id}")
+        dispatch_github_processing(project_id, owner, repo, background_tasks=background_tasks)
+        logger.info(f"[CELERY_TASK_QUEUED] project_id={project_id}, returning HTTP 202")
         return UploadResponse(
             project_id=project_id,
             status="queued",
-            message=f"GitHub repository '{owner}/{repo}' queued successfully. Background fetching started."
+            message=f"GitHub repository '{owner}/{repo}' queued successfully. Processing started."
         )
     except Exception as exc:
         logger.error(f"[GITHUB] Failed: {exc}")

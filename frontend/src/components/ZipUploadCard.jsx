@@ -10,6 +10,7 @@ const STAGE_LABELS = {
   analyzing_python: '🐍 Parsing Python AST symbols…',
   analyzing_javascript: '⚡ Indexing JavaScript/TypeScript…',
   building_dependencies: '🕸️ Connecting dependency graph…',
+  finalizing: '✨ Finalizing workspace indexes…',
   completed: '🎉 Mission Complete! Codebase ready.',
   failed: '💥 Oops! Processing failed.',
 };

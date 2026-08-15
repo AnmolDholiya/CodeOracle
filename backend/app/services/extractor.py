@@ -26,10 +26,10 @@ os.makedirs(BASE_TEMP_DIR, exist_ok=True)
 logger = logging.getLogger("codeoracle.extractor")
 
 # ── Upload & Security Limits ────────────────────────────────────────
-MAX_UPLOAD_SIZE = 200 * 1024 * 1024        # 200 MB max ZIP upload
-MAX_UNCOMPRESSED_SIZE = 1024 * 1024 * 1024 # 1 GB max total extracted size (archive bomb guard)
-MAX_FILE_COUNT = 50_000                     # Max files inside ZIP
-MAX_SINGLE_FILE_SIZE = 100 * 1024 * 1024   # 100 MB max single extracted file
+MAX_UPLOAD_SIZE = 350 * 1024 * 1024        # 350 MB max ZIP upload
+MAX_UNCOMPRESSED_SIZE = 2 * 1024 * 1024 * 1024 # 2 GB max total extracted size (archive bomb guard)
+MAX_FILE_COUNT = 100_000                    # Max files inside ZIP
+MAX_SINGLE_FILE_SIZE = 150 * 1024 * 1024   # 150 MB max single extracted file
 UPLOAD_CHUNK_SIZE = 1024 * 1024            # 1 MB streaming chunk
 
 def is_safe_path(base_dir: str, target_path: str) -> bool:
@@ -202,6 +202,7 @@ def process_project_background(project_id: str, original_filename: str):
         logger.info(f"[WORKER] Starting background processing: project_id={project_id}, filename={original_filename}")
 
         # ── Stage 1: Filtered ZIP Extraction with Security & Bomb Guards ─────
+        logger.info(f"[EXTRACTION_STARTED] project_id={project_id}")
         update_project_status(project_dir, "processing", "extracting", 15, "Extracting codebase safely (filtering ignored directories & binaries)...")
         t_extract_start = time.time()
         
@@ -266,10 +267,11 @@ def process_project_background(project_id: str, original_filename: str):
                     os.remove(zip_path)
                     
         t_extract_end = time.time()
-        logger.info(f"[TIMING] EXTRACTION_FINISHED in {t_extract_end - t_extract_start:.3f}s for project_id={project_id}")
+        logger.info(f"[EXTRACTION_COMPLETED] in {t_extract_end - t_extract_start:.3f}s for project_id={project_id}")
 
-        # ── Stage 2: Unified Parallel Static Analysis & File Discovery ───────
-        update_project_status(project_dir, "processing", "discovering_files", 35, "Scanning codebase and parsing AST symbols...")
+        # ── Stage 2: Unified Static Analysis & Python AST Parsing ────────────
+        logger.info(f"[PYTHON_ANALYSIS_STARTED] project_id={project_id}")
+        update_project_status(project_dir, "processing", "analyzing_python", 45, "Scanning codebase and parsing Python AST symbols...")
         t_analysis_start = time.time()
         
         from app.services.python_ast import scan_and_analyze_workspace
@@ -287,15 +289,18 @@ def process_project_background(project_id: str, original_filename: str):
             
         t_analysis_end = time.time()
         logger.info(
-            f"[TIMING] ANALYSIS_FINISHED in {t_analysis_end - t_analysis_start:.3f}s for project_id={project_id}: "
+            f"[PYTHON_ANALYSIS_COMPLETED] in {t_analysis_end - t_analysis_start:.3f}s for project_id={project_id}: "
             f"files={metadata.total_files}, LOC={metadata.total_lines_of_code}, "
-            f"classes={ast_analysis.total_classes}, functions={ast_analysis.total_functions}, imports={ast_analysis.total_imports}"
+            f"classes={ast_analysis.total_classes}, functions={ast_analysis.total_functions}"
         )
 
         # ── Stage 3: JavaScript/TypeScript Indexing ──────────────────────────
-        update_project_status(project_dir, "processing", "analyzing_javascript", 75, "Indexed JavaScript & TypeScript components...")
+        logger.info(f"[JS_ANALYSIS_STARTED] project_id={project_id}")
+        update_project_status(project_dir, "processing", "analyzing_javascript", 70, "Indexing JavaScript & TypeScript components...")
+        logger.info(f"[JS_ANALYSIS_COMPLETED] project_id={project_id}")
 
         # ── Stage 4: In-Memory Dependency Graph Generation ───────────────────
+        logger.info(f"[DEPENDENCY_GRAPH_STARTED] project_id={project_id}")
         update_project_status(project_dir, "processing", "building_dependencies", 90, "Building import dependency graph...")
         t_dep_start = time.time()
         
@@ -306,12 +311,13 @@ def process_project_background(project_id: str, original_filename: str):
             f.write(graph.model_dump_json(indent=2))
             
         t_dep_end = time.time()
-        logger.info(f"[TIMING] DEPS_FINISHED in {t_dep_end - t_dep_start:.3f}s for project_id={project_id}: nodes={len(graph.nodes)}, edges={len(graph.edges)}")
+        logger.info(f"[DEPENDENCY_GRAPH_COMPLETED] in {t_dep_end - t_dep_start:.3f}s for project_id={project_id}: nodes={len(graph.nodes)}, edges={len(graph.edges)}")
 
-        # ── Stage 5: Completed ───────────────────────────────────────────────
+        # ── Stage 5: Finalizing & Completed ──────────────────────────────────
+        update_project_status(project_dir, "processing", "finalizing", 98, "Finalizing workspace indexes...")
         total_duration = time.time() - t_start
         update_project_status(project_dir, "completed", "completed", 100, "Project processing completed successfully!")
-        logger.info(f"[WORKER] COMPLETED project_id={project_id} in total {total_duration:.3f}s")
+        logger.info(f"[PROJECT_COMPLETED] project_id={project_id} in total {total_duration:.3f}s")
 
     except Exception as exc:
         logger.error(f"[WORKER] Failed: project_id={project_id}, error={exc}")

@@ -54,3 +54,5 @@ explanation_cache.json
 coverage.json
 workspaces/
 *.zip
+scratch/
+

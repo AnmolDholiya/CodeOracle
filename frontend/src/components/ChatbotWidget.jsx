@@ -120,49 +120,96 @@ export default function ChatbotWidget({ projectId, currentFile = null }) {
     }
   };
 
-  // Basic Markdown Renderer for AI responses
+  // Enhanced Markdown Renderer for AI responses
   const renderMessageContent = (text = '') => {
-    const lines = text.split('\n');
-    return lines.map((line, idx) => {
-      // Headers
-      if (line.startsWith('### ')) {
-        return <h5 key={idx} style={{ margin: '0.6rem 0 0.3rem', fontSize: '1rem', fontWeight: 800, fontFamily: 'var(--font-heading)' }}>{line.replace('### ', '')}</h5>;
+    if (!text) return null;
+
+    // Check for fenced code blocks
+    const codeBlockRegex = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g;
+    const parts = [];
+    let lastIndex = 0;
+    let match;
+
+    while ((match = codeBlockRegex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push({ type: 'text', content: text.substring(lastIndex, match.index) });
       }
-      if (line.startsWith('## ')) {
-        return <h4 key={idx} style={{ margin: '0.8rem 0 0.4rem', fontSize: '1.08rem', fontWeight: 800, fontFamily: 'var(--font-heading)' }}>{line.replace('## ', '')}</h4>;
-      }
-      if (line.startsWith('# ')) {
-        return <h3 key={idx} style={{ margin: '1rem 0 0.5rem', fontSize: '1.2rem', fontWeight: 800, fontFamily: 'var(--font-heading)' }}>{line.replace('# ', '')}</h3>;
-      }
-      // Blockquotes
-      if (line.startsWith('> ')) {
+      parts.push({ type: 'code', language: match[1] || 'code', code: match[2] });
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < text.length) {
+      parts.push({ type: 'text', content: text.substring(lastIndex) });
+    }
+
+    return parts.map((part, pIdx) => {
+      if (part.type === 'code') {
         return (
-          <div key={idx} style={{ borderLeft: '3px solid var(--accent-primary)', paddingLeft: '0.6rem', margin: '0.4rem 0', color: 'var(--text-secondary)', fontStyle: 'italic', fontSize: '0.86rem' }}>
-            {line.replace('> ', '')}
+          <div key={pIdx} style={{ margin: '0.65rem 0', borderRadius: '8px', overflow: 'hidden', border: '1.5px solid var(--ink)', background: '#1E1E2E' }}>
+            <div style={{ padding: '0.3rem 0.65rem', background: '#2D2D3F', borderBottom: '1px solid #3F3F56', color: '#94A3B8', fontSize: '0.72rem', fontWeight: 700, fontFamily: 'var(--font-mono)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>{part.language || 'code'}</span>
+            </div>
+            <pre style={{ margin: 0, padding: '0.65rem 0.85rem', color: '#F8FAFC', fontFamily: 'var(--font-mono)', fontSize: '0.8rem', lineHeight: 1.45, overflowX: 'auto', whiteSpace: 'pre-wrap' }}>
+              <code>{part.code.trim()}</code>
+            </pre>
           </div>
         );
       }
-      // Bullet list items
-      if (line.startsWith('- ') || line.startsWith('• ') || line.startsWith('* ')) {
-        const bulletText = line.substring(2);
-        return (
-          <div key={idx} style={{ display: 'flex', gap: '0.4rem', marginLeft: '0.4rem', marginY: '0.2rem', fontSize: '0.88rem' }}>
-            <span>•</span>
-            <span>{parseInlineCode(bulletText)}</span>
-          </div>
-        );
-      }
-      // Empty line
-      if (!line.trim()) {
-        return <div key={idx} style={{ height: '0.4rem' }} />;
-      }
-      // Normal paragraph
-      return <p key={idx} style={{ margin: '0.25rem 0', fontSize: '0.88rem', lineHeight: 1.45 }}>{parseInlineCode(line)}</p>;
+
+      // Render lines of text
+      const lines = part.content.split('\n');
+      return lines.map((line, idx) => {
+        const lineKey = `${pIdx}_${idx}`;
+
+        // Headers
+        if (line.startsWith('### ')) {
+          return <h5 key={lineKey} style={{ margin: '0.75rem 0 0.35rem', fontSize: '1rem', fontWeight: 800, fontFamily: 'var(--font-heading)', color: 'var(--text-primary)' }}>{line.replace('### ', '')}</h5>;
+        }
+        if (line.startsWith('## ')) {
+          return <h4 key={lineKey} style={{ margin: '0.85rem 0 0.4rem', fontSize: '1.08rem', fontWeight: 800, fontFamily: 'var(--font-heading)', color: 'var(--text-primary)' }}>{line.replace('## ', '')}</h4>;
+        }
+        if (line.startsWith('# ')) {
+          return <h3 key={lineKey} style={{ margin: '1rem 0 0.5rem', fontSize: '1.2rem', fontWeight: 800, fontFamily: 'var(--font-heading)', color: 'var(--text-primary)' }}>{line.replace('# ', '')}</h3>;
+        }
+        // Blockquotes
+        if (line.startsWith('> ')) {
+          return (
+            <div key={lineKey} style={{ borderLeft: '3px solid var(--accent-primary)', paddingLeft: '0.6rem', margin: '0.4rem 0', color: 'var(--text-secondary)', fontStyle: 'italic', fontSize: '0.86rem' }}>
+              {line.replace('> ', '')}
+            </div>
+          );
+        }
+        // Numbered list items (e.g. "1. ")
+        const numMatch = line.match(/^(\d+)\.\s+(.*)$/);
+        if (numMatch) {
+          return (
+            <div key={lineKey} style={{ display: 'flex', gap: '0.45rem', marginLeft: '0.35rem', marginY: '0.25rem', fontSize: '0.88rem' }}>
+              <span style={{ fontWeight: 800, color: '#FF3385' }}>{numMatch[1]}.</span>
+              <span>{parseInlineMarkdown(numMatch[2])}</span>
+            </div>
+          );
+        }
+        // Bullet list items
+        if (line.startsWith('- ') || line.startsWith('• ') || line.startsWith('* ')) {
+          const bulletText = line.substring(2);
+          return (
+            <div key={lineKey} style={{ display: 'flex', gap: '0.45rem', marginLeft: '0.35rem', marginY: '0.2rem', fontSize: '0.88rem' }}>
+              <span style={{ color: '#FF3385', fontWeight: 800 }}>•</span>
+              <span>{parseInlineMarkdown(bulletText)}</span>
+            </div>
+          );
+        }
+        // Empty line
+        if (!line.trim()) {
+          return <div key={lineKey} style={{ height: '0.35rem' }} />;
+        }
+        // Normal paragraph
+        return <p key={lineKey} style={{ margin: '0.25rem 0', fontSize: '0.88rem', lineHeight: 1.5 }}>{parseInlineMarkdown(line)}</p>;
+      });
     });
   };
 
-  const parseInlineCode = (str = '') => {
-    const parts = str.split(/(`[^`]+`)/g);
+  const parseInlineMarkdown = (str = '') => {
+    const parts = str.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
     return parts.map((part, pIdx) => {
       if (part.startsWith('`') && part.endsWith('`')) {
         return (
@@ -172,7 +219,7 @@ export default function ChatbotWidget({ projectId, currentFile = null }) {
         );
       }
       if (part.startsWith('**') && part.endsWith('**')) {
-        return <strong key={pIdx}>{part.slice(2, -2)}</strong>;
+        return <strong key={pIdx} style={{ fontWeight: 800 }}>{part.slice(2, -2)}</strong>;
       }
       return part;
     });
@@ -421,10 +468,10 @@ export default function ChatbotWidget({ projectId, currentFile = null }) {
 
             {/* Loading Indicator */}
             {loading && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#FFFFFF', padding: '0.6rem 0.9rem', borderRadius: '12px', border: '2px solid var(--ink)', boxShadow: '2px 2px 0px var(--ink)', maxWidth: '75%' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#FFFFFF', padding: '0.65rem 0.95rem', borderRadius: '12px', border: '2px solid var(--ink)', boxShadow: '2px 2px 0px var(--ink)', maxWidth: '80%' }}>
                 <Sparkles size={16} className="spin" style={{ color: '#FF3385' }} />
                 <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-heading)' }}>
-                  CodeOracle AI is thinking…
+                  Thinking about your codebase…
                 </span>
               </div>
             )}

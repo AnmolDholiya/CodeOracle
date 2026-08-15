@@ -4,6 +4,10 @@ import io
 import json
 from fastapi.testclient import TestClient
 from app.main import app
+from app.celery_app import celery_app
+
+celery_app.conf.task_always_eager = True
+celery_app.conf.task_eager_propagates = True
 
 client = TestClient(app)
 
